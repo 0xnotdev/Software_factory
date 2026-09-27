@@ -21,6 +21,7 @@ export interface CommandSummary {
   duration_ms: number;
   timed_out: boolean;
   json?: unknown;
+  json_parse_error?: string;
 }
 
 export interface SkippedCheck {
@@ -62,7 +63,11 @@ export async function probeCtx(options: {
   }
 
   return {
-    ok: version.exit_code === 0 && help.exit_code === 0,
+    ok:
+      version.exit_code === 0 &&
+      help.exit_code === 0 &&
+      skippedOrSuccessfulJson(status) &&
+      skippedOrSuccessfulJson(doctor),
     path: options.ctxPath,
     version,
     help,
@@ -91,12 +96,21 @@ export function summarize(result: CommandResult, parseJson = false): CommandSumm
     duration_ms: result.duration_ms,
     timed_out: result.timed_out,
   };
-  if (parseJson && result.stdout.trim().length > 0) {
-    try {
-      summary.json = JSON.parse(result.stdout) as unknown;
-    } catch {
-      // Keep raw output only when JSON parsing fails.
+  if (parseJson) {
+    if (result.stdout.trim().length === 0) {
+      summary.json_parse_error = "expected JSON stdout";
+    } else {
+      try {
+        summary.json = JSON.parse(result.stdout) as unknown;
+      } catch (error) {
+        summary.json_parse_error = error instanceof Error ? error.message : String(error);
+      }
     }
   }
   return summary;
+}
+
+function skippedOrSuccessfulJson(check: CommandSummary | SkippedCheck): boolean {
+  if ("skipped" in check) return true;
+  return check.exit_code === 0 && check.json_parse_error === undefined;
 }

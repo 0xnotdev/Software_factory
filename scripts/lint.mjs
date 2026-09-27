@@ -1,13 +1,33 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { glob } from "node:fs/promises";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
 const failures = [];
 
-const gitignore = await readFile(".gitignore", "utf8");
-for (const required of [".factory/state/", ".ctx/", "docs/probes/*.transcript.*", ".env.*"]) {
-  if (!gitignore.split(/\r?\n/).includes(required)) {
-    failures.push(`.gitignore missing exact rule: ${required}`);
+const ignoredPaths = [
+  ".factory/state/context/TASK.md",
+  ".ctx/index.sqlite",
+  "docs/probes/tmp/pack.md",
+  "docs/probes/evidence.transcript.1",
+  "docs/probes/generated.pack.md",
+  "models/model.gguf",
+  "models/model.safetensors",
+];
+
+const trackedPaths = ["docs/probes/CP-00.md", ".env.example", "models/source-fixture.md"];
+
+for (const path of ignoredPaths) {
+  if (!(await isIgnored(path))) {
+    failures.push(`expected Git to ignore protected path: ${path}`);
+  }
+}
+
+for (const path of trackedPaths) {
+  if (await isIgnored(path)) {
+    failures.push(`expected Git to allow trackable path: ${path}`);
   }
 }
 
@@ -27,3 +47,13 @@ if (failures.length > 0) {
 }
 
 console.log("lint ok");
+
+async function isIgnored(path) {
+  try {
+    await execFileAsync("git", ["check-ignore", "--quiet", "--", path]);
+    return true;
+  } catch (error) {
+    if (typeof error?.code === "number" && error.code === 1) return false;
+    throw error;
+  }
+}

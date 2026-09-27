@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { canonicalDirectory, isPathInside, sha256File } from "./process.js";
 
@@ -33,6 +33,7 @@ interface TasksTomlShape {
   backend: string | null;
   markdownPath: string | null;
   markdownArchive: string | null;
+  unsupportedStringEscapes: string[];
 }
 
 export async function inspectFirstmateHome(homeInput: string): Promise<FirstmateHomeCheck> {
@@ -51,6 +52,12 @@ export async function inspectFirstmateHome(homeInput: string): Promise<Firstmate
     home,
   });
   const parsed = parseTasksToml(tasksTomlText);
+  if (parsed.unsupportedStringEscapes.length > 0) {
+    throw new FirstmateHomeError("Unsupported .tasks.toml string escape syntax", {
+      home,
+      keys: parsed.unsupportedStringEscapes,
+    });
+  }
   if (parsed.backend !== "markdown") {
     throw new FirstmateHomeError("Only the markdown tasks-axi backend is supported in CP-00", {
       home,
@@ -61,22 +68,37 @@ export async function inspectFirstmateHome(homeInput: string): Promise<Firstmate
     throw new FirstmateHomeError("Markdown tasks-axi backend is missing markdown.path", { home });
   }
 
-  const backlogPath = resolve(home, parsed.markdownPath);
-  if (!isPathInside(home, backlogPath)) {
+  const configuredBacklogPath = resolve(home, parsed.markdownPath);
+  if (!isPathInside(home, configuredBacklogPath)) {
     throw new FirstmateHomeError("Configured backlog path escapes the Firstmate home", {
       home,
-      backlog_path: backlogPath,
+      backlog_path: configuredBacklogPath,
     });
   }
-  const backlogInfo = await statRegular(backlogPath, "configured backlog file does not exist", {
-    home,
-    backlog_path: backlogPath,
-  });
+  const backlogInfo = await statRegular(
+    configuredBacklogPath,
+    "configured backlog file does not exist",
+    {
+      home,
+      backlog_path: configuredBacklogPath,
+    },
+  );
   if (!backlogInfo) {
     throw new FirstmateHomeError("Configured backlog file is not a regular file", {
       home,
-      backlog_path: backlogPath,
+      backlog_path: configuredBacklogPath,
     });
+  }
+  const backlogPath = await realpath(configuredBacklogPath);
+  if (!isPathInside(home, backlogPath)) {
+    throw new FirstmateHomeError(
+      "Configured backlog path escapes the Firstmate home after symlink resolution",
+      {
+        home,
+        configured_backlog_path: configuredBacklogPath,
+        backlog_path: backlogPath,
+      },
+    );
   }
 
   return {
@@ -147,6 +169,7 @@ export function parseTasksToml(text: string): TasksTomlShape {
     backend: null,
     markdownPath: null,
     markdownArchive: null,
+    unsupportedStringEscapes: [],
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -161,6 +184,10 @@ export function parseTasksToml(text: string): TasksTomlShape {
     if (!keyValue) continue;
     const key = keyValue[1];
     const value = keyValue[2] ?? "";
+    if (value.includes("\\")) {
+      shape.unsupportedStringEscapes.push(section === "" ? (key ?? "") : `${section}.${key ?? ""}`);
+      continue;
+    }
     if (section === "" && key === "backend") shape.backend = value;
     if (section === "markdown" && key === "path") shape.markdownPath = value;
     if (section === "markdown" && key === "archive") shape.markdownArchive = value;

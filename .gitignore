@@ -18,6 +18,16 @@ docs/probes/*.pack.md
 *.transcript
 *.transcript.*
 
+# Local model artifacts (keep source fixtures trackable; ignore binary model payloads)
+models/**/*.gguf
+models/**/*.safetensors
+models/**/*.ckpt
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/*.tflite
+.factory/state/models/
+
 # Environment/secrets
 .env
 .env.*

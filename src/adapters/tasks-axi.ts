@@ -33,17 +33,19 @@ export async function probeTasksAxi(options: {
   timeoutMs: number;
 }): Promise<TasksAxiCheck> {
   const runOptions = { cwd: options.home.path, timeoutMs: options.timeoutMs };
+  const before = options.home.markdown.backlog_sha256;
   const version = summarize(await runCommand(options.tasksPath, ["--version"], runOptions));
   const help = summarize(await runCommand(options.tasksPath, ["--help"], runOptions));
-  const before = await sha256File(options.home.markdown.backlog_path);
+  const afterMetadataProbe = await sha256File(options.home.markdown.backlog_path);
   const ready = summarize(await runCommand(options.tasksPath, ["ready"], runOptions));
   const after = await sha256File(options.home.markdown.backlog_path);
-  const readOnly = before === after;
+  const readOnly = before === afterMetadataProbe && afterMetadataProbe === after;
   if (!readOnly) {
     throw new TasksAxiError("Read-only tasks-axi probe changed the backlog file", {
       home: options.home.path,
       backlog_path: options.home.markdown.backlog_path,
       before,
+      after_metadata_probe: afterMetadataProbe,
       after,
     });
   }
