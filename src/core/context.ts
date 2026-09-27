@@ -183,7 +183,7 @@ export async function generateContextPack(options: {
     options.root,
     packJson,
     generation,
-    new Set(input.sources.map((s) => s.identity)),
+    input.sources,
     allSourceDigests,
   );
 
@@ -292,8 +292,10 @@ async function loadInput(
       const text = await readTextFile(root, path, SOURCE_READ_LIMIT);
       const identity = await resolveInside(root, path);
       const existing = sources.find((source) => source.identity === identity);
-      if (existing) existing.aliases.push(path);
-      else sources.push({ path, identity, aliases: [path], text, sha256: sha256(text) });
+      if (existing) {
+        assertSameSnapshot(path, existing.sha256, sha256(text));
+        existing.aliases.push(path);
+      } else sources.push({ path, identity, aliases: [path], text, sha256: sha256(text) });
     } catch (error) {
       blocked("A mandatory context source cannot be read exactly", {
         reason: "MANDATORY_SOURCE_INVALID",
@@ -390,16 +392,27 @@ function assertFreshStatus(status: Record<string, unknown>): void {
   }
 }
 
+function assertSameSnapshot(path: string, captured: string | undefined, actual: string): void {
+  if (captured !== undefined && captured !== actual) {
+    blocked("A source changed while context was being generated", {
+      reason: "SOURCE_CHANGED_DURING_GENERATION",
+      paths: [path],
+    });
+  }
+}
+
 async function verifiedRanges(
   root: string,
   pack: Record<string, unknown>,
   generation: number,
-  mandatory: Set<string>,
+  mandatory: SourceFile[],
   digests: Record<string, string>,
 ): Promise<RetrievedRange[]> {
   if (!Array.isArray(pack.items)) {
     blocked("CTX pack omitted its items array", { reason: "CTX_PACK_INVALID" });
   }
+  const snapshots = new Map(mandatory.map((source) => [source.identity, source.sha256]));
+  const mandatoryIdentities = new Set(snapshots.keys());
   const cache = new Map<string, SourceFile>();
   const ranges: RetrievedRange[] = [];
   for (const rawItem of pack.items) {
@@ -456,8 +469,11 @@ async function verifiedRanges(
         end_offset: endOffset,
       });
     }
-    digests[path] = document.sha256;
-    if (mandatory.has(document.identity)) continue;
+    assertSameSnapshot(path, snapshots.get(document.identity), document.sha256);
+    assertSameSnapshot(path, digests[path], document.sha256);
+    snapshots.set(document.identity, document.sha256);
+    digests[path] ??= document.sha256;
+    if (mandatoryIdentities.has(document.identity)) continue;
     ranges.push({
       identity: document.identity,
       aliases: [path],
@@ -608,6 +624,41 @@ function contextQuery(task: TaskContract): string {
   ].join("\n");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isReceipt(value: unknown): value is Receipt {
+  if (!isRecord(value)) return false;
+  const digest = (entry: unknown): boolean =>
+    typeof entry === "string" && /^[a-f0-9]{64}$/.test(entry);
+  const integer = (entry: unknown): boolean =>
+    typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0;
+  return (
+    value.schema_version === 1 &&
+    typeof value.task_id === "string" &&
+    value.task_id.length > 0 &&
+    digest(value.contract_sha256) &&
+    digest(value.project_contract_sha256) &&
+    digest(value.pack_sha256) &&
+    isRecord(value.source_digests) &&
+    Object.values(value.source_digests).every(digest) &&
+    isRecord(value.ctx) &&
+    integer(value.ctx.index_generation) &&
+    (value.ctx.retrieval_mode === "LEXICAL_ONLY" ||
+      value.ctx.retrieval_mode === "HYBRID_SEMANTIC") &&
+    isRecord(value.budgets) &&
+    [
+      value.budgets.token,
+      value.budgets.estimated_tokens,
+      value.budgets.bytes,
+      value.budgets.byte_limit,
+    ].every(integer) &&
+    typeof value.generated_at === "string" &&
+    Number.isFinite(Date.parse(value.generated_at))
+  );
+}
+
 async function inspectPriorReceipt(
   root: string,
   paths: { pack: string; receipt: string },
@@ -618,12 +669,14 @@ async function inspectPriorReceipt(
     generation: number;
   },
 ): Promise<{ valid: boolean; reasons: string[] }> {
-  let receipt: Partial<Receipt>;
+  let parsed: unknown;
   try {
-    receipt = JSON.parse(await readFile(join(root, paths.receipt), "utf8")) as Partial<Receipt>;
+    parsed = JSON.parse(await readFile(join(root, paths.receipt), "utf8")) as unknown;
   } catch {
     return { valid: false, reasons: ["RECEIPT_MISSING"] };
   }
+  if (!isReceipt(parsed)) return { valid: false, reasons: ["RECEIPT_INVALID"] };
+  const receipt = parsed;
   const reasons = new Set<string>();
   if (receipt.contract_sha256 !== current.task) reasons.add("CONTRACT_CHANGED");
   if (receipt.project_contract_sha256 !== current.project) reasons.add("PROJECT_CONTRACT_CHANGED");

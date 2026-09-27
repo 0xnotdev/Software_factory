@@ -452,6 +452,59 @@ test("context blocks contract edits after the validated snapshot", async () => {
   }
 });
 
+test("context rejects a later CTX version of captured mandatory authority", async () => {
+  for (const mode of ["source-edit", "source-edit-alias"]) {
+    const fixture = await seeded(mode);
+    try {
+      await symlink("../PROJECT.md", join(fixture.root, "docs/PROJECT-ALIAS.md"));
+      const result = await factory(fixture, { mode });
+      assert.equal(result.exit, 3, result.stdout);
+      assert.equal(
+        parseObject(result.stdout).error.details.reason,
+        "SOURCE_CHANGED_DURING_GENERATION",
+      );
+      await assertNoPack(fixture.root);
+    } finally {
+      await fixture.dispose();
+    }
+  }
+});
+
+test("context regenerates malformed receipt shapes", async () => {
+  const fixture = await seeded("malformed-receipt");
+  try {
+    const first = await factory(fixture, { mode: "semantic" });
+    assert.equal(first.exit, 0, first.stdout);
+    const receiptPath = join(fixture.root, parseObject(first.stdout).receipt_path);
+    const valid = parseObject(await readFile(receiptPath, "utf8"));
+    for (const malformed of [
+      null,
+      [],
+      42,
+      "receipt",
+      {},
+      { ...valid, ctx: null },
+      { ...valid, source_digests: [] },
+      { ...valid, source_digests: { "PROJECT.md": 42 } },
+      { ...valid, budgets: null },
+      { ...valid, schema_version: 2 },
+    ]) {
+      await writeFile(receiptPath, JSON.stringify(malformed));
+      const result = await factory(fixture, { mode: "semantic" });
+      assert.equal(result.exit, 0, result.stdout);
+      const payload = parseObject(result.stdout);
+      assert.equal(payload.previous_receipt_valid, false);
+      assert.ok(payload.receipt_invalid_reasons.includes("RECEIPT_INVALID"));
+      assert.equal(parseObject(await readFile(receiptPath, "utf8")).schema_version, 1);
+    }
+    const recovered = await factory(fixture, { mode: "semantic" });
+    assert.equal(recovered.exit, 0, recovered.stdout);
+    assert.equal(parseObject(recovered.stdout).previous_receipt_valid, true);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 interface Fixture {
   root: string;
   ctx: string;
@@ -499,6 +552,9 @@ const value = (flag) => args[args.indexOf(flag) + 1];
 const root = value("--root") || process.cwd();
 const hash = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 if (command === "status") {
+  if (mode.startsWith("source-edit")) {
+    fs.appendFileSync(path.join(root, "PROJECT.md"), "Revised mandatory authority.");
+  }
   if (mode === "contract-edit") {
     const contract = path.join(root, ".factory/tasks/CTX-001.yaml");
     fs.writeFileSync(contract, fs.readFileSync(contract, "utf8").replace("required: [PROJECT.md, ARCHITECTURE.md]", "required: [PROJECT.md, ARCHITECTURE.md, docs/EXTRA.md]"));
@@ -526,6 +582,11 @@ if (command === "pack") {
     items[1].source.provenance.document_path = "docs/EXTRA-ALIAS.md";
     const original = fs.readFileSync(path.join(root, "docs/PROJECT-ALIAS.md"), "utf8");
     items.push({source:{text:original,provenance:{document_path:"docs/PROJECT-ALIAS.md",document_sha256:hash(original),start_offset:0,end_offset:[...original].length,index_generation:7}}});
+  }
+  if (mode.startsWith("source-edit")) {
+    const document = mode === "source-edit" ? "PROJECT.md" : "docs/PROJECT-ALIAS.md";
+    const original = fs.readFileSync(path.join(root, document), "utf8");
+    items.push({source:{text:original,provenance:{document_path:document,document_sha256:hash(original),start_offset:0,end_offset:[...original].length,index_generation:7}}});
   }
   if (mode === "forged") items[0] = item(0, firstEnd, "forged text that is absent from the original");
   console.log(JSON.stringify({schema_version:4,requested_token_budget:Number(value("--token-budget")),estimated_tokens:900,items,completeness_status:mode === "lexical-insufficient" ? "PARTIAL" : "COMPLETE",index_generation:7,retrieval_metadata:{retrieval_mode:mode.startsWith("lexical")?"LEXICAL_ONLY":"HYBRID_SEMANTIC",active_channels:mode.startsWith("lexical")?["structural","lexical"]:["structural","lexical","semantic"],require_semantic:false}}));
