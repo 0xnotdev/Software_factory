@@ -238,13 +238,26 @@ for (const scenario of invalidCases) {
   });
 }
 
-test("validate rejects a required-source symlink outside the Git root", async () => {
+test("validate rejects a required-source symlink outside the Git root", async (context) => {
   const root = await seeded("source-symlink-escape");
   const outside = join(dirname(root), `${basename(root)}-external.md`);
   try {
     await writeFile(outside, "# External\n");
     await rm(join(root, "PROJECT.md"));
-    await symlink(outside, join(root, "PROJECT.md"));
+    try {
+      await symlink(outside, join(root, "PROJECT.md"));
+    } catch (error) {
+      if (
+        process.platform === "win32" &&
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "EPERM"
+      ) {
+        context.skip("This Windows host does not permit symlink creation");
+        return;
+      }
+      throw error;
+    }
     const result = await factory(root, "validate");
     assert.equal(result.exit, 2, result.stderr || result.stdout);
     const payload = JSON.parse(result.stdout);
