@@ -1,0 +1,8 @@
+schema_version: 1
+project: context-fixture
+conditions:
+  - id: C-CTX
+    outcome: A bounded attributed context pack is generated.
+    method: executable
+    check_id: context-integration
+    evidence: evidence/context.json

@@ -29,6 +29,31 @@ export interface SkippedCheck {
   reason: string;
 }
 
+export interface CtxJsonInvocation {
+  summary: CommandSummary;
+  json: Record<string, unknown> | null;
+}
+
+export async function invokeCtxJson(options: {
+  ctxPath: string;
+  root: string;
+  args: string[];
+  timeoutMs: number;
+}): Promise<CtxJsonInvocation> {
+  const summary = summarize(
+    await runCommand(options.ctxPath, options.args, {
+      cwd: options.root,
+      timeoutMs: options.timeoutMs,
+    }),
+    true,
+  );
+  const json = isObject(summary.json) ? summary.json : null;
+  if (summary.json !== undefined && json === null && summary.json_parse_error === undefined) {
+    summary.json_parse_error = "expected one JSON object on stdout";
+  }
+  return { summary, json };
+}
+
 export async function probeCtx(options: {
   ctxPath: string;
   root: string;
@@ -113,4 +138,8 @@ export function summarize(result: CommandResult, parseJson = false): CommandSumm
 function skippedOrSuccessfulJson(check: CommandSummary | SkippedCheck): boolean {
   if ("skipped" in check) return true;
   return check.exit_code === 0 && check.json_parse_error === undefined;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

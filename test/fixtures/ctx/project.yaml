@@ -1,0 +1,17 @@
+schema_version: 1
+id: context-fixture
+name: Context Fixture
+intent: Prove bounded task context generation.
+audience: Factory maintainers.
+goals:
+  - Generate attributed context.
+non_goals:
+  - Publish tasks.
+constraints:
+  - Credentials never enter a context pack.
+  - Context generation never invokes a shell.
+documents:
+  required:
+    - PROJECT.md
+    - ARCHITECTURE.md
+completion: .factory/completion.yaml
