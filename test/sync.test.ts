@@ -9,8 +9,15 @@ import test from "node:test";
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const cliPath = join(repoRoot, "dist/src/cli.js");
-const installedTasksAxi =
-  process.env.TASKS_AXI_BIN ?? (await execFileAsync("which", ["tasks-axi"])).stdout.trim();
+const detectedTasksAxi = process.env.TASKS_AXI_BIN
+  ? process.env.TASKS_AXI_BIN
+  : await execFileAsync(process.platform === "win32" ? "where" : "which", ["tasks-axi"])
+      .then((result) => result.stdout.split(/\r?\n/)[0]?.trim())
+      .catch(() => undefined);
+const installedTasksAxi = detectedTasksAxi ?? "__missing_tasks_axi__";
+const requiresTasksAxi = detectedTasksAxi
+  ? undefined
+  : { skip: "tasks-axi is not installed in this environment" };
 
 interface Fixture {
   base: string;
@@ -162,177 +169,197 @@ async function writeWrapper(fixture: Fixture, name: string, body: string): Promi
   return path;
 }
 
-test("dry-run previews create/unchanged/conflict without changing one backlog byte", async () => {
-  const fixture = await createFixture("sync-preview", [["TASK-A", []]]);
-  try {
-    assert.equal((await factory(fixture, "--apply")).exitCode, 0);
-    await writeFile(join(fixture.root, ".factory/tasks/TASK-B.yaml"), task("TASK-B"));
-    await writeFile(join(fixture.root, ".factory/tasks/TASK-C.yaml"), task("TASK-C"));
-    await axi(fixture, [
-      "add",
-      publishedId("TASK-C"),
-      "TASK-C title",
-      "--kind",
-      "ship",
-      "--repo",
-      fixture.repo,
-      "--body",
-      "human-authored conflicting body",
-      "--json",
+test(
+  "dry-run previews create/unchanged/conflict without changing one backlog byte",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-preview", [["TASK-A", []]]);
+    try {
+      assert.equal((await factory(fixture, "--apply")).exitCode, 0);
+      await writeFile(join(fixture.root, ".factory/tasks/TASK-B.yaml"), task("TASK-B"));
+      await writeFile(join(fixture.root, ".factory/tasks/TASK-C.yaml"), task("TASK-C"));
+      await axi(fixture, [
+        "add",
+        publishedId("TASK-C"),
+        "TASK-C title",
+        "--kind",
+        "ship",
+        "--repo",
+        fixture.repo,
+        "--body",
+        "human-authored conflicting body",
+        "--json",
+      ]);
+
+      const before = await backlogHash(fixture.home);
+      const result = await factory(fixture, "--dry-run");
+      const after = await backlogHash(fixture.home);
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+      const report = JSON.parse(result.stdout) as any;
+      assert.deepEqual(
+        Object.fromEntries(report.records.map((record: any) => [record.task_id, record.action])),
+        { "TASK-A": "unchanged", "TASK-B": "create", "TASK-C": "conflict" },
+      );
+      assert.equal(report.backlog.sha256_before, before);
+      assert.equal(report.backlog.sha256_after, after);
+      assert.equal(report.backlog.unchanged, true);
+      assert.equal(after, before);
+
+      const refused = await factory(fixture, "--apply");
+      assert.equal(refused.exitCode, 4);
+      assert.equal(JSON.parse(refused.stdout).error.code, "PUBLICATION_CONFLICT");
+      assert.equal(await backlogHash(fixture.home), before);
+      await assert.rejects(axi(fixture, ["show", publishedId("TASK-B"), "--full"]));
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
+
+test(
+  "a dependency conflict deterministically blocks an unpublished dependent",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-blocked-plan", [
+      ["TASK-A", []],
+      ["TASK-B", ["TASK-A"]],
     ]);
+    try {
+      await axi(fixture, [
+        "add",
+        publishedId("TASK-A"),
+        "TASK-A title",
+        "--kind",
+        "ship",
+        "--repo",
+        fixture.repo,
+        "--body",
+        "conflicting body",
+        "--json",
+      ]);
+      const before = await backlogHash(fixture.home);
+      const result = await factory(fixture, "--dry-run");
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+      const report = JSON.parse(result.stdout) as any;
+      assert.deepEqual(
+        Object.fromEntries(report.records.map((record: any) => [record.task_id, record.action])),
+        { "TASK-A": "conflict", "TASK-B": "blocked" },
+      );
+      assert.equal(await backlogHash(fixture.home), before);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
 
-    const before = await backlogHash(fixture.home);
-    const result = await factory(fixture, "--dry-run");
-    const after = await backlogHash(fixture.home);
-    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
-    const report = JSON.parse(result.stdout) as any;
-    assert.deepEqual(
-      Object.fromEntries(report.records.map((record: any) => [record.task_id, record.action])),
-      { "TASK-A": "unchanged", "TASK-B": "create", "TASK-C": "conflict" },
-    );
-    assert.equal(report.backlog.sha256_before, before);
-    assert.equal(report.backlog.sha256_after, after);
-    assert.equal(report.backlog.unchanged, true);
-    assert.equal(after, before);
-
-    const refused = await factory(fixture, "--apply");
-    assert.equal(refused.exitCode, 4);
-    assert.equal(JSON.parse(refused.stdout).error.code, "PUBLICATION_CONFLICT");
-    assert.equal(await backlogHash(fixture.home), before);
-    await assert.rejects(axi(fixture, ["show", publishedId("TASK-B"), "--full"]));
-  } finally {
-    await fixture.dispose();
-  }
-});
-
-test("a dependency conflict deterministically blocks an unpublished dependent", async () => {
-  const fixture = await createFixture("sync-blocked-plan", [
-    ["TASK-A", []],
-    ["TASK-B", ["TASK-A"]],
-  ]);
-  try {
-    await axi(fixture, [
-      "add",
-      publishedId("TASK-A"),
-      "TASK-A title",
-      "--kind",
-      "ship",
-      "--repo",
-      fixture.repo,
-      "--body",
-      "conflicting body",
-      "--json",
+test(
+  "apply uses installed tasks-axi in dependency order and a second apply is idempotent",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-apply", [
+      ["TASK-A", []],
+      ["TASK-B", ["TASK-A"]],
     ]);
-    const before = await backlogHash(fixture.home);
-    const result = await factory(fixture, "--dry-run");
-    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
-    const report = JSON.parse(result.stdout) as any;
-    assert.deepEqual(
-      Object.fromEntries(report.records.map((record: any) => [record.task_id, record.action])),
-      { "TASK-A": "conflict", "TASK-B": "blocked" },
-    );
-    assert.equal(await backlogHash(fixture.home), before);
-  } finally {
-    await fixture.dispose();
-  }
-});
+    try {
+      const first = await factory(fixture, "--apply");
+      assert.equal(first.exitCode, 0, first.stderr || first.stdout);
+      const firstReport = JSON.parse(first.stdout) as any;
+      assert.deepEqual(firstReport.created_ids, [publishedId("TASK-A"), publishedId("TASK-B")]);
+      assert.deepEqual(
+        firstReport.records.map((record: any) => record.task_id),
+        ["TASK-A", "TASK-B"],
+      );
 
-test("apply uses installed tasks-axi in dependency order and a second apply is idempotent", async () => {
-  const fixture = await createFixture("sync-apply", [
-    ["TASK-A", []],
-    ["TASK-B", ["TASK-A"]],
-  ]);
-  try {
-    const first = await factory(fixture, "--apply");
-    assert.equal(first.exitCode, 0, first.stderr || first.stdout);
-    const firstReport = JSON.parse(first.stdout) as any;
-    assert.deepEqual(firstReport.created_ids, [publishedId("TASK-A"), publishedId("TASK-B")]);
-    assert.deepEqual(
-      firstReport.records.map((record: any) => record.task_id),
-      ["TASK-A", "TASK-B"],
-    );
+      const showA = await axi(fixture, ["show", publishedId("TASK-A"), "--full"]);
+      const showB = await axi(fixture, ["show", publishedId("TASK-B"), "--full"]);
+      const ready = await axi(fixture, ["ready", "--repo", fixture.repo]);
+      assert.match(showA.stdout, /Factory publication v1/);
+      assert.match(showA.stdout, /Contract SHA-256: [a-f0-9]{64}/);
+      assert.match(showB.stdout, new RegExp(`blocked_by: ${publishedId("TASK-A")}`));
+      assert.match(ready.stdout, new RegExp(publishedId("TASK-A")));
+      assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-B")));
 
-    const showA = await axi(fixture, ["show", publishedId("TASK-A"), "--full"]);
-    const showB = await axi(fixture, ["show", publishedId("TASK-B"), "--full"]);
-    const ready = await axi(fixture, ["ready", "--repo", fixture.repo]);
-    assert.match(showA.stdout, /Factory publication v1/);
-    assert.match(showA.stdout, /Contract SHA-256: [a-f0-9]{64}/);
-    assert.match(showB.stdout, new RegExp(`blocked_by: ${publishedId("TASK-A")}`));
-    assert.match(ready.stdout, new RegExp(publishedId("TASK-A")));
-    assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-B")));
+      const beforeSecond = await backlogHash(fixture.home);
+      const second = await factory(fixture, "--apply");
+      assert.equal(second.exitCode, 0, second.stderr || second.stdout);
+      const secondReport = JSON.parse(second.stdout) as any;
+      assert.equal(secondReport.summary.unchanged, 2);
+      assert.deepEqual(secondReport.created_ids, []);
+      assert.equal(await backlogHash(fixture.home), beforeSecond);
+      const backlog = await readFile(join(fixture.home, "data/backlog.md"), "utf8");
+      assert.equal(backlog.split(`- [ ] ${publishedId("TASK-A")} -`).length - 1, 1);
+      assert.equal(backlog.split(`- [ ] ${publishedId("TASK-B")} -`).length - 1, 1);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
 
-    const beforeSecond = await backlogHash(fixture.home);
-    const second = await factory(fixture, "--apply");
-    assert.equal(second.exitCode, 0, second.stderr || second.stdout);
-    const secondReport = JSON.parse(second.stdout) as any;
-    assert.equal(secondReport.summary.unchanged, 2);
-    assert.deepEqual(secondReport.created_ids, []);
-    assert.equal(await backlogHash(fixture.home), beforeSecond);
-    const backlog = await readFile(join(fixture.home, "data/backlog.md"), "utf8");
-    assert.equal(backlog.split(`- [ ] ${publishedId("TASK-A")} -`).length - 1, 1);
-    assert.equal(backlog.split(`- [ ] ${publishedId("TASK-B")} -`).length - 1, 1);
-  } finally {
-    await fixture.dispose();
-  }
-});
+test(
+  "an existing held dependency stays held and keeps its dependent non-ready",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-held", [
+      ["TASK-A", []],
+      ["TASK-B", ["TASK-A"]],
+    ]);
+    try {
+      assert.equal((await factory(fixture, "--apply")).exitCode, 0);
+      await axi(fixture, ["hold", publishedId("TASK-A"), "--reason", "captain hold"]);
+      const before = await backlogHash(fixture.home);
+      const retry = await factory(fixture, "--apply");
+      assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout);
+      assert.equal(await backlogHash(fixture.home), before);
+      const show = await axi(fixture, ["show", publishedId("TASK-A"), "--full"]);
+      const ready = await axi(fixture, ["ready", "--repo", fixture.repo]);
+      assert.match(show.stdout, /held: yes/);
+      assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-A")));
+      assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-B")));
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
 
-test("an existing held dependency stays held and keeps its dependent non-ready", async () => {
-  const fixture = await createFixture("sync-held", [
-    ["TASK-A", []],
-    ["TASK-B", ["TASK-A"]],
-  ]);
-  try {
-    assert.equal((await factory(fixture, "--apply")).exitCode, 0);
-    await axi(fixture, ["hold", publishedId("TASK-A"), "--reason", "captain hold"]);
-    const before = await backlogHash(fixture.home);
-    const retry = await factory(fixture, "--apply");
-    assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout);
-    assert.equal(await backlogHash(fixture.home), before);
-    const show = await axi(fixture, ["show", publishedId("TASK-A"), "--full"]);
-    const ready = await axi(fixture, ["ready", "--repo", fixture.repo]);
-    assert.match(show.stdout, /held: yes/);
-    assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-A")));
-    assert.doesNotMatch(ready.stdout, new RegExp(publishedId("TASK-B")));
-  } finally {
-    await fixture.dispose();
-  }
-});
+test(
+  "partial apply reports durable IDs and retry converges without duplicates",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-partial", [
+      ["TASK-A", []],
+      ["TASK-B", ["TASK-A"]],
+    ]);
+    try {
+      const marker = join(fixture.base, "failed-once");
+      const wrapper = await writeWrapper(
+        fixture,
+        "partial-tasks-axi",
+        `import { existsSync, writeFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2);\nif (args[0] === "add" && args[1] === ${JSON.stringify(publishedId("TASK-B"))} && !existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, "failed"); console.error("injected second create failure"); process.exit(9); }\nconst child = spawnSync(${JSON.stringify(installedTasksAxi)}, args, { cwd: process.cwd(), encoding: "utf8" });\nprocess.stdout.write(child.stdout ?? ""); process.stderr.write(child.stderr ?? ""); process.exit(child.status ?? 1);\n`,
+      );
+      const partial = await factory(fixture, "--apply", wrapper);
+      assert.notEqual(partial.exitCode, 0);
+      const failure = JSON.parse(partial.stdout) as any;
+      assert.equal(failure.error.code, "PARTIAL_SYNC");
+      assert.deepEqual(failure.error.details.created_ids, [publishedId("TASK-A")]);
+      assert.deepEqual(failure.error.details.remaining_ids, [publishedId("TASK-B")]);
+      assert.match(
+        (await axi(fixture, ["show", publishedId("TASK-A"), "--full"])).stdout,
+        /Factory publication v1/,
+      );
 
-test("partial apply reports durable IDs and retry converges without duplicates", async () => {
-  const fixture = await createFixture("sync-partial", [
-    ["TASK-A", []],
-    ["TASK-B", ["TASK-A"]],
-  ]);
-  try {
-    const marker = join(fixture.base, "failed-once");
-    const wrapper = await writeWrapper(
-      fixture,
-      "partial-tasks-axi",
-      `import { existsSync, writeFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2);\nif (args[0] === "add" && args[1] === ${JSON.stringify(publishedId("TASK-B"))} && !existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, "failed"); console.error("injected second create failure"); process.exit(9); }\nconst child = spawnSync(${JSON.stringify(installedTasksAxi)}, args, { cwd: process.cwd(), encoding: "utf8" });\nprocess.stdout.write(child.stdout ?? ""); process.stderr.write(child.stderr ?? ""); process.exit(child.status ?? 1);\n`,
-    );
-    const partial = await factory(fixture, "--apply", wrapper);
-    assert.notEqual(partial.exitCode, 0);
-    const failure = JSON.parse(partial.stdout) as any;
-    assert.equal(failure.error.code, "PARTIAL_SYNC");
-    assert.deepEqual(failure.error.details.created_ids, [publishedId("TASK-A")]);
-    assert.deepEqual(failure.error.details.remaining_ids, [publishedId("TASK-B")]);
-    assert.match(
-      (await axi(fixture, ["show", publishedId("TASK-A"), "--full"])).stdout,
-      /Factory publication v1/,
-    );
-
-    const retry = await factory(fixture, "--apply", wrapper);
-    assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout);
-    const report = JSON.parse(retry.stdout) as any;
-    assert.deepEqual(report.created_ids, [publishedId("TASK-B")]);
-    assert.equal(report.summary.unchanged, 1);
-    const backlog = await readFile(join(fixture.home, "data/backlog.md"), "utf8");
-    assert.equal(backlog.split(`- [ ] ${publishedId("TASK-A")} -`).length - 1, 1);
-    assert.equal(backlog.split(`- [ ] ${publishedId("TASK-B")} -`).length - 1, 1);
-  } finally {
-    await fixture.dispose();
-  }
-});
+      const retry = await factory(fixture, "--apply", wrapper);
+      assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout);
+      const report = JSON.parse(retry.stdout) as any;
+      assert.deepEqual(report.created_ids, [publishedId("TASK-B")]);
+      assert.equal(report.summary.unchanged, 1);
+      const backlog = await readFile(join(fixture.home, "data/backlog.md"), "utf8");
+      assert.equal(backlog.split(`- [ ] ${publishedId("TASK-A")} -`).length - 1, 1);
+      assert.equal(backlog.split(`- [ ] ${publishedId("TASK-B")} -`).length - 1, 1);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
 
 for (const scenario of [
   "wrong home",
@@ -344,7 +371,7 @@ for (const scenario of [
   "symlink home",
   "stale contract",
 ] as const) {
-  test(`${scenario} fails without changing backlog bytes`, async (context) => {
+  test(`${scenario} fails without changing backlog bytes`, requiresTasksAxi, async (context) => {
     const fixture = await createFixture(`sync-negative-${scenario.replaceAll(" ", "-")}`, [
       ["TASK-A", []],
     ]);
@@ -425,23 +452,27 @@ for (const scenario of [
   });
 }
 
-test("publication ID collision after tasks-axi encoding is rejected", async () => {
-  const fixture = await createFixture("sync-encoded-duplicate", [
-    ["TASK-A", []],
-    ["task-a", []],
-  ]);
-  try {
-    const before = await backlogHash(fixture.home);
-    const result = await factory(fixture, "--apply");
-    assert.equal(result.exitCode, 2);
-    assert.equal(JSON.parse(result.stdout).error.code, "DUPLICATE_PUBLICATION_ID");
-    assert.equal(await backlogHash(fixture.home), before);
-  } finally {
-    await fixture.dispose();
-  }
-});
+test(
+  "publication ID collision after tasks-axi encoding is rejected",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-encoded-duplicate", [
+      ["TASK-A", []],
+      ["task-a", []],
+    ]);
+    try {
+      const before = await backlogHash(fixture.home);
+      const result = await factory(fixture, "--apply");
+      assert.equal(result.exitCode, 2);
+      assert.equal(JSON.parse(result.stdout).error.code, "DUPLICATE_PUBLICATION_ID");
+      assert.equal(await backlogHash(fixture.home), before);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
 
-test("duplicate local task ID is rejected before publication", async () => {
+test("duplicate local task ID is rejected before publication", requiresTasksAxi, async () => {
   const fixture = await createFixture("sync-duplicate", [["TASK-A", []]]);
   try {
     await writeFile(join(fixture.root, ".factory/tasks/DUPLICATE.yaml"), task("TASK-A"));
