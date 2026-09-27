@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   chmod,
@@ -292,6 +293,165 @@ test("context invalidates and replaces receipts after source or contract changes
   }
 });
 
+test("context blocks unignored or tracked runtime destinations", async () => {
+  for (const setup of ["missing", "receipt-only", "tracked"]) {
+    const fixture = await seeded(`ignore-${setup}`);
+    try {
+      if (setup === "missing") await rm(join(fixture.root, ".gitignore"));
+      if (setup === "receipt-only") {
+        await writeFile(join(fixture.root, ".gitignore"), ".factory/state/context/*.json\n");
+      }
+      if (setup === "tracked") {
+        await mkdir(join(fixture.root, ".factory/state/context"));
+        await writeFile(join(fixture.root, ".factory/state/context/CTX-001.json"), "tracked");
+        await execFileAsync("git", ["add", "-f", ".factory/state/context/CTX-001.json"], {
+          cwd: fixture.root,
+        });
+      }
+      const result = await factory(fixture, { mode: "semantic" });
+      assert.equal(result.exit, 3, result.stdout);
+      assert.equal(parseObject(result.stdout).error.details.reason, "STATE_NOT_IGNORED");
+      await assert.rejects(stat(join(fixture.root, ".factory/state/context/CTX-001.md")));
+      if (setup === "tracked")
+        assert.equal(
+          await readFile(join(fixture.root, ".factory/state/context/CTX-001.json"), "utf8"),
+          "tracked",
+        );
+      else await assertNoPack(fixture.root);
+    } finally {
+      await fixture.dispose();
+    }
+  }
+});
+
+test("context hashes original BOM bytes and invalidates BOM-only changes", async () => {
+  const fixture = await seeded("bom");
+  try {
+    const first = await factory(fixture, { mode: "semantic" });
+    assert.equal(first.exit, 0, first.stdout);
+    for (const path of [
+      "PROJECT.md",
+      ".factory/project.yaml",
+      ".factory/tasks/CTX-001.yaml",
+      "docs/EXTRA.md",
+    ]) {
+      await writeFile(
+        join(fixture.root, path),
+        "\uFEFF" + (await readFile(join(fixture.root, path), "utf8")),
+      );
+    }
+    const result = await factory(fixture, { mode: "semantic" });
+    assert.equal(result.exit, 0, result.stdout);
+    const payload = parseObject(result.stdout);
+    const receipt = parseObject(await readFile(join(fixture.root, payload.receipt_path), "utf8"));
+    for (const [path, digest] of [
+      ["PROJECT.md", receipt.source_digests["PROJECT.md"]],
+      [".factory/project.yaml", receipt.project_contract_sha256],
+      [".factory/tasks/CTX-001.yaml", receipt.contract_sha256],
+    ]) {
+      assert.equal(
+        digest,
+        createHash("sha256")
+          .update(await readFile(join(fixture.root, path)))
+          .digest("hex"),
+      );
+    }
+    assert.ok(payload.receipt_invalid_reasons.includes("CONTRACT_CHANGED"));
+    assert.ok(payload.receipt_invalid_reasons.includes("PROJECT_CONTRACT_CHANGED"));
+    assert.ok(payload.receipt_invalid_reasons.includes("SOURCE_CHANGED:PROJECT.md"));
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("context deduplicates mandatory and retrieved symlink identities", async () => {
+  const fixture = await seeded("aliases");
+  try {
+    await symlink("../PROJECT.md", join(fixture.root, "docs/PROJECT-ALIAS.md"));
+    await symlink("EXTRA.md", join(fixture.root, "docs/EXTRA-ALIAS.md"));
+    await writeFile(
+      join(fixture.root, ".factory/tasks/CTX-001.yaml"),
+      taskContract.replace(
+        "required: [PROJECT.md, ARCHITECTURE.md]",
+        "required: [PROJECT.md, ARCHITECTURE.md, docs/PROJECT-ALIAS.md]",
+      ),
+    );
+    const result = await factory(fixture, { mode: "aliases" });
+    assert.equal(result.exit, 0, result.stdout);
+    const payload = parseObject(result.stdout);
+    const pack = await readFile(join(fixture.root, payload.pack_path), "utf8");
+    assert.equal(count(pack, await readFile(join(fixture.root, "PROJECT.md"), "utf8")), 1);
+    assert.equal(
+      count(pack, "The overlapping excerpt sentinel appears exactly once in the source."),
+      1,
+    );
+    for (const path of ["docs/PROJECT-ALIAS.md", "docs/EXTRA-ALIAS.md"]) {
+      assert.ok(pack.includes(path));
+      assert.equal(
+        payload.source_digests[path],
+        createHash("sha256")
+          .update(await readFile(join(fixture.root, path)))
+          .digest("hex"),
+      );
+    }
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("context derives mandatory sources from the same captured task bytes", async () => {
+  const fixture = await seeded("captured-task");
+  try {
+    await writeFile(join(fixture.root, "docs/NEW.md"), "New mandatory authority sentinel.\n");
+    const hook = join(fixture.root, "read-hook.mjs");
+    await writeFile(
+      hook,
+      `import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.readFile;
+let reads = 0;
+fs.readFile = async function(path, ...args) {
+  const bytes = await original.call(this, path, ...args);
+  if (String(path).endsWith("/CTX-001.yaml") && ++reads === 2) {
+    await fs.writeFile(path, bytes.toString().replace("required: [PROJECT.md, ARCHITECTURE.md]", "required: [PROJECT.md, ARCHITECTURE.md, docs/NEW.md]"));
+  }
+  return bytes;
+};
+syncBuiltinESMExports();
+`,
+    );
+    const result = await runFactory(
+      fixture.root,
+      ["context", "CTX-001", "--ctx-bin", fixture.ctx, "--json"],
+      { NODE_OPTIONS: `--import=${hook}` },
+    );
+    assert.equal(result.exit, 0, result.stdout);
+    const payload = parseObject(result.stdout);
+    const pack = await readFile(join(fixture.root, payload.pack_path), "utf8");
+    if (pack.includes("docs/NEW.md")) {
+      assert.ok(pack.includes("New mandatory authority sentinel."));
+      assert.ok(payload.source_digests["docs/NEW.md"]);
+    }
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("context blocks contract edits after the validated snapshot", async () => {
+  const fixture = await seeded("contract-race");
+  try {
+    const result = await factory(fixture, { mode: "contract-edit" });
+    assert.equal(result.exit, 3, result.stdout);
+    assert.equal(
+      parseObject(result.stdout).error.details.reason,
+      "SOURCE_CHANGED_DURING_GENERATION",
+    );
+    await assertNoPack(fixture.root);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 interface Fixture {
   root: string;
   ctx: string;
@@ -303,6 +463,7 @@ async function seeded(name: string): Promise<Fixture> {
   await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, `${name}-`));
   await execFileAsync("git", ["init", "-q", root]);
+  await writeFile(join(root, ".gitignore"), ".factory/state/\n");
   await mkdir(join(root, ".factory/tasks"), { recursive: true });
   await mkdir(join(root, ".factory/state"), { recursive: true });
   await mkdir(join(root, ".ctx"), { recursive: true });
@@ -338,6 +499,10 @@ const value = (flag) => args[args.indexOf(flag) + 1];
 const root = value("--root") || process.cwd();
 const hash = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 if (command === "status") {
+  if (mode === "contract-edit") {
+    const contract = path.join(root, ".factory/tasks/CTX-001.yaml");
+    fs.writeFileSync(contract, fs.readFileSync(contract, "utf8").replace("required: [PROJECT.md, ARCHITECTURE.md]", "required: [PROJECT.md, ARCHITECTURE.md, docs/EXTRA.md]"));
+  }
   if (mode === "stale") {
     console.log(JSON.stringify({category:"SOURCE_STALE",index_generation:7,stale_documents:["PROJECT.md"],missing_documents:[],retrieval_mode:"HYBRID_SEMANTIC",active_channels:["structural","lexical","semantic"]}));
   } else {
@@ -357,6 +522,11 @@ if (command === "pack") {
   const secondStart = full.indexOf("The overlapping excerpt sentinel");
   const item = (start, end, text = full.slice(start, end)) => ({source:{source_type:"excerpt",text,provenance:{document_path:relative,document_sha256:hash(full),start_line:1,end_line:6,start_offset:start,end_offset:end,range_sha256:hash(text),index_generation:7}},estimated_tokens:Math.ceil(Buffer.byteLength(text)/3)});
   const items = [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
+  if (mode === "aliases") {
+    items[1].source.provenance.document_path = "docs/EXTRA-ALIAS.md";
+    const original = fs.readFileSync(path.join(root, "docs/PROJECT-ALIAS.md"), "utf8");
+    items.push({source:{text:original,provenance:{document_path:"docs/PROJECT-ALIAS.md",document_sha256:hash(original),start_offset:0,end_offset:[...original].length,index_generation:7}}});
+  }
   if (mode === "forged") items[0] = item(0, firstEnd, "forged text that is absent from the original");
   console.log(JSON.stringify({schema_version:4,requested_token_budget:Number(value("--token-budget")),estimated_tokens:900,items,completeness_status:mode === "lexical-insufficient" ? "PARTIAL" : "COMPLETE",index_generation:7,retrieval_metadata:{retrieval_mode:mode.startsWith("lexical")?"LEXICAL_ONLY":"HYBRID_SEMANTIC",active_channels:mode.startsWith("lexical")?["structural","lexical"]:["structural","lexical","semantic"],require_semantic:false}}));
   process.exit(0);

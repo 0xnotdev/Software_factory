@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { invokeCtxJson, type CtxJsonInvocation } from "../adapters/ctx.js";
+import { runCommand } from "../adapters/process.js";
 import type { ProjectContract, TaskContract } from "../types.js";
-import { asDiagnostic, readTextFile, readYamlContract, resolveInside, taskPaths } from "./load.js";
+import { asDiagnostic, readTextFile, parseYamlContract, resolveInside } from "./load.js";
 import { validateProject } from "./validate.js";
 
 const SOURCE_READ_LIMIT = 1_000_000;
@@ -43,12 +44,16 @@ export class ContextIssue extends Error {
 }
 
 interface SourceFile {
+  identity: string;
+  aliases: string[];
   path: string;
   text: string;
   sha256: string;
 }
 
 interface RetrievedRange {
+  identity: string;
+  aliases: string[];
   path: string;
   text: string;
   sha256: string;
@@ -83,7 +88,7 @@ export async function generateContextPack(options: {
   const tokenBudget = options.tokenBudget ?? DEFAULT_TOKEN_BUDGET[input.task.complexity];
   const byteBudget = options.byteBudget ?? tokenBudget * 4;
   const sourceDigests = Object.fromEntries(
-    input.sources.map((source) => [source.path, source.sha256]),
+    input.sources.flatMap((source) => source.aliases.map((path) => [path, source.sha256])),
   );
   const paths = contextPaths(options.taskId);
 
@@ -173,14 +178,15 @@ export async function generateContextPack(options: {
     });
   }
 
+  const allSourceDigests = { ...sourceDigests };
   const ranges = await verifiedRanges(
     options.root,
     packJson,
     generation,
-    new Set(input.sources.map((s) => s.path)),
+    new Set(input.sources.map((s) => s.identity)),
+    allSourceDigests,
   );
-  const allSourceDigests = { ...sourceDigests };
-  for (const range of ranges) allSourceDigests[range.path] = range.sha256;
+
   const markdown = renderPack({
     taskId: options.taskId,
     taskPath: input.taskPath,
@@ -253,35 +259,41 @@ async function loadInput(
   taskSha256: string;
   sources: SourceFile[];
 }> {
-  const validation = await validateProject(root);
+  const captured = new Map<string, string>();
+  const validation = await validateProject(root, captured);
   if (validation.diagnostics.length > 0) {
     blocked("Project contracts or mandatory sources are invalid", {
       reason: "VALIDATION_FAILED",
       diagnostics: validation.diagnostics,
     });
   }
-  const projectText = await readTextFile(root, ".factory/project.yaml", SOURCE_READ_LIMIT);
-  const project = (await readYamlContract(root, ".factory/project.yaml")) as ProjectContract;
+  const projectText = captured.get(".factory/project.yaml")!;
+  const project = parseYamlContract(projectText, ".factory/project.yaml") as ProjectContract;
   let taskPath: string | undefined;
   let task: TaskContract | undefined;
-  for (const path of await taskPaths(root)) {
-    const candidate = (await readYamlContract(root, path)) as TaskContract;
+  let taskText = "";
+  for (const [path, text] of captured) {
+    if (!path.startsWith(".factory/tasks/")) continue;
+    const candidate = parseYamlContract(text, path) as TaskContract;
     if (candidate.id === taskId) {
       taskPath = path;
       task = candidate;
+      taskText = text;
       break;
     }
   }
   if (taskPath === undefined || task === undefined) {
     blocked(`Task contract not found: ${taskId}`, { reason: "TASK_NOT_FOUND", task_id: taskId });
   }
-  const taskText = await readTextFile(root, taskPath, SOURCE_READ_LIMIT);
   const required = [...new Set([...project.documents.required, ...task.context.required])];
   const sources: SourceFile[] = [];
   for (const path of required) {
     try {
       const text = await readTextFile(root, path, SOURCE_READ_LIMIT);
-      sources.push({ path, text, sha256: sha256(text) });
+      const identity = await resolveInside(root, path);
+      const existing = sources.find((source) => source.identity === identity);
+      if (existing) existing.aliases.push(path);
+      else sources.push({ path, identity, aliases: [path], text, sha256: sha256(text) });
     } catch (error) {
       blocked("A mandatory context source cannot be read exactly", {
         reason: "MANDATORY_SOURCE_INVALID",
@@ -383,6 +395,7 @@ async function verifiedRanges(
   pack: Record<string, unknown>,
   generation: number,
   mandatory: Set<string>,
+  digests: Record<string, string>,
 ): Promise<RetrievedRange[]> {
   if (!Array.isArray(pack.items)) {
     blocked("CTX pack omitted its items array", { reason: "CTX_PACK_INVALID" });
@@ -411,7 +424,13 @@ async function verifiedRanges(
     if (document === undefined) {
       try {
         const original = await readTextFile(root, path, SOURCE_READ_LIMIT);
-        document = { path, text: original, sha256: sha256(original) };
+        document = {
+          path,
+          identity: await resolveInside(root, path),
+          aliases: [path],
+          text: original,
+          sha256: sha256(original),
+        };
         cache.set(path, document);
       } catch (error) {
         blocked("CTX provenance did not resolve to an exact source inside the repository", {
@@ -437,8 +456,11 @@ async function verifiedRanges(
         end_offset: endOffset,
       });
     }
-    if (mandatory.has(path)) continue;
+    digests[path] = document.sha256;
+    if (mandatory.has(document.identity)) continue;
     ranges.push({
+      identity: document.identity,
+      aliases: [path],
       path,
       text,
       sha256: document.sha256,
@@ -455,7 +477,7 @@ async function verifiedRanges(
 function mergeRanges(ranges: RetrievedRange[], cache: Map<string, SourceFile>): RetrievedRange[] {
   const ordered = [...ranges].sort(
     (left, right) =>
-      left.path.localeCompare(right.path) ||
+      left.identity.localeCompare(right.identity) ||
       left.startOffset - right.startOffset ||
       left.endOffset - right.endOffset,
   );
@@ -464,9 +486,10 @@ function mergeRanges(ranges: RetrievedRange[], cache: Map<string, SourceFile>): 
     const previous = merged.at(-1);
     if (
       previous !== undefined &&
-      previous.path === range.path &&
+      previous.identity === range.identity &&
       range.startOffset <= previous.endOffset
     ) {
+      previous.aliases = [...new Set([...previous.aliases, ...range.aliases])];
       if (range.endOffset > previous.endOffset) {
         previous.endOffset = range.endOffset;
         previous.endLine = range.endLine;
@@ -525,7 +548,7 @@ function renderPack(input: {
       "",
       `## Required source: ${source.path}`,
       "",
-      `Source: \`${source.path}\`  `,
+      `Source: ${source.aliases.map((path) => `\`${path}\``).join(", ")}  `,
       `SHA-256: \`${source.sha256}\``,
       "",
       source.text,
@@ -536,7 +559,7 @@ function renderPack(input: {
       "",
       `## Retrieved context: ${range.path}:${range.startLine}-${range.endLine}`,
       "",
-      `Source: \`${range.path}\`  `,
+      `Source: ${range.aliases.map((path) => `\`${path}\``).join(", ")}  `,
       `Document SHA-256: \`${range.sha256}\`  `,
       `Range SHA-256: \`${range.rangeSha256}\`  `,
       `Original offsets: \`${range.startOffset}-${range.endOffset}\`  `,
@@ -661,6 +684,21 @@ async function writeAtomically(
   pack: string,
   receipt: string,
 ): Promise<void> {
+  for (const path of [paths.pack, paths.receipt]) {
+    const ignored = await runCommand("git", ["check-ignore", "-q", "--", path], {
+      cwd: root,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+    });
+    if (ignored.exit_code !== 0 || ignored.timed_out) {
+      blocked(
+        "Context artifacts must be ignored by Git; run factory init and remove tracked state from the index",
+        {
+          reason: "STATE_NOT_IGNORED",
+          path,
+        },
+      );
+    }
+  }
   const state = await resolveInside(root, ".factory/state");
   await mkdir(join(state, "context"), { recursive: true });
   const directory = await resolveInside(root, paths.directory);
