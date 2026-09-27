@@ -9,3 +9,10 @@ Do not fork or alter CTX, Pi, Firstmate, tasks-axi, Herdr, Treehouse, or no-mist
 Keep project contracts in `.factory/` and runtime artifacts in ignored `.factory/state/`. Do not put secrets, source archives, or agent transcripts in context packs. If the active checkpoint depends on a missing external interface, probe its current installed version and record findings; stop only the dependent work, then continue independent work. Correct authoritative docs in the same commit when evidence disproves a design assumption.
 
 No implicit model routing or autonomous supervisor. Pi reasons, Factory validates, Firstmate executes. A closed task is not a completed product until the independent project checks pass at the release candidate SHA.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
