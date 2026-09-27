@@ -6,6 +6,7 @@ import { inspectFirstmateHome, FirstmateHomeError } from "./adapters/firstmate-h
 import { probeCtx, summarize, type CommandSummary } from "./adapters/ctx.js";
 import { probeTasksAxi, TasksAxiError } from "./adapters/tasks-axi.js";
 import { resolveExecutable, runCommand, type ExecutableResolution } from "./adapters/process.js";
+import { ContextIssue, generateContextPack, type ContextResult } from "./core/context.js";
 import { initProject, type InitResult } from "./core/init.js";
 import { ContractIssue } from "./core/load.js";
 import { validateProject, type ValidationResult } from "./core/validate.js";
@@ -19,6 +20,9 @@ interface CliOptions {
   home: string | null;
   root: string;
   timeoutMs: number;
+  taskId: string | null;
+  tokenBudget: number | null;
+  byteBudget: number | null;
   bins: Record<string, string | undefined>;
 }
 
@@ -108,9 +112,37 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       writeOutput(options.json, report);
       return 0;
     }
-    throw new CliError("INVALID_COMMAND", "Expected command: doctor, init, or validate", 2, {
-      command: options.command,
-    });
+    if (options.command === "context") {
+      if (options.taskId === null) {
+        throw new CliError("VALIDATION_ERROR", "context requires TASK-ID", 2);
+      }
+      const root = await canonicalProjectRoot(options.root);
+      const resolution = await resolveExecutable("ctx", options.bins.ctx);
+      if (!resolution.found || resolution.path === null) {
+        throw new CliError("TOOL_UNAVAILABLE", "Required tool is unavailable: ctx", 3, {
+          tool: "ctx",
+          resolution,
+        });
+      }
+      const contextOptions: Parameters<typeof generateContextPack>[0] = {
+        root,
+        taskId: options.taskId,
+        ctxPath: resolution.path,
+        timeoutMs: options.timeoutMs,
+        ...(options.tokenBudget === null ? {} : { tokenBudget: options.tokenBudget }),
+        ...(options.byteBudget === null ? {} : { byteBudget: options.byteBudget }),
+      };
+      writeOutput(options.json, await generateContextPack(contextOptions));
+      return 0;
+    }
+    throw new CliError(
+      "INVALID_COMMAND",
+      "Expected command: doctor, init, validate, or context",
+      2,
+      {
+        command: options.command,
+      },
+    );
   } catch (error) {
     const normalized = normalizeError(error);
     const json = options.json || argv.includes("--json");
@@ -301,6 +333,9 @@ function defaultOptions(): CliOptions {
     home: null,
     root: process.cwd(),
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    taskId: null,
+    tokenBudget: null,
+    byteBudget: null,
     bins: {},
   };
 }
@@ -313,6 +348,10 @@ function parseArgs(argv: string[]): CliOptions {
     if (arg === undefined) continue;
     if (!arg.startsWith("-") && options.command === null) {
       options.command = arg;
+      continue;
+    }
+    if (!arg.startsWith("-") && options.command === "context" && options.taskId === null) {
+      options.taskId = arg;
       continue;
     }
     switch (arg) {
@@ -347,11 +386,15 @@ function parseArgs(argv: string[]): CliOptions {
         options.bins["no-mistakes"] = readValue(argv, ++index, arg);
         break;
       case "--timeout-ms": {
-        const value = Number.parseInt(readValue(argv, ++index, arg), 10);
-        if (!Number.isFinite(value) || value <= 0) {
-          throw new CliError("VALIDATION_ERROR", "--timeout-ms must be a positive integer", 2);
-        }
-        options.timeoutMs = value;
+        options.timeoutMs = positiveInteger(readValue(argv, ++index, arg), arg);
+        break;
+      }
+      case "--token-budget": {
+        options.tokenBudget = positiveInteger(readValue(argv, ++index, arg), arg);
+        break;
+      }
+      case "--byte-budget": {
+        options.byteBudget = positiveInteger(readValue(argv, ++index, arg), arg);
         break;
       }
       case "--help":
@@ -373,7 +416,18 @@ function readValue(argv: string[], index: number, flag: string): string {
   return value;
 }
 
-function writeOutput(json: boolean, report: DoctorReport | InitResult | ValidateReport): void {
+function positiveInteger(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new CliError("VALIDATION_ERROR", `${flag} must be a positive integer`, 2);
+  }
+  return parsed;
+}
+
+function writeOutput(
+  json: boolean,
+  report: DoctorReport | InitResult | ValidateReport | ContextResult,
+): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
@@ -387,6 +441,12 @@ function writeOutput(json: boolean, report: DoctorReport | InitResult | Validate
   if (report.command === "validate") {
     process.stdout.write(
       `Factory validate: ${report.project_id}\ntasks: ${report.task_count}; conditions: ${report.condition_count}\n`,
+    );
+    return;
+  }
+  if (report.command === "context") {
+    process.stdout.write(
+      `Factory context: ${report.task_id}\npack: ${report.pack_path}\nreceipt: ${report.receipt_path}\n`,
     );
     return;
   }
@@ -433,11 +493,14 @@ function normalizeError(error: unknown): CliError {
   if (error instanceof ContractIssue) {
     return new CliError("VALIDATION_FAILED", error.message, 2, [error.diagnostic()]);
   }
+  if (error instanceof ContextIssue) {
+    return new CliError(error.code, error.message, 3, error.details);
+  }
   return new CliError("INTERNAL_ERROR", error instanceof Error ? error.message : String(error), 1);
 }
 
 function helpText(): string {
-  return `usage: factory <doctor|init|validate> [--root <project>] [--json]\n\nCommands:\n  doctor --home <home>       Read-only integration boundary probe\n  init                       Create .factory directories and ignore runtime state\n  validate                   Check versioned contracts and dependency graph\n\nOptions:\n  --root <path>              Project root (default: cwd)\n  --home <path>              Disposable Firstmate home for doctor\n  --ctx-bin <path>           Override ctx executable for doctor\n  --tasks-bin <path>         Override tasks-axi executable for doctor\n  --json                     Print one schema_version=1 JSON object`;
+  return `usage: factory <doctor|init|validate|context TASK-ID> [--root <project>] [--json]\n\nCommands:\n  doctor --home <home>       Read-only integration boundary probe\n  init                       Create .factory directories and ignore runtime state\n  validate                   Check versioned contracts and dependency graph\n  context TASK-ID            Write a bounded attributed context pack and receipt\n\nOptions:\n  --root <path>              Project root (default: cwd)\n  --home <path>              Disposable Firstmate home for doctor\n  --ctx-bin <path>           Override ctx executable\n  --tasks-bin <path>         Override tasks-axi executable for doctor\n  --token-budget <count>     Override the task token budget\n  --byte-budget <count>      Override the task byte ceiling\n  --json                     Print one schema_version=1 JSON object`;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

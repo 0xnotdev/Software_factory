@@ -4,7 +4,7 @@ import { parseDocument } from "yaml";
 import type { Diagnostic } from "../types.js";
 
 const CONTRACT_BYTE_LIMIT = 1_000_000;
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export class ContractIssue extends Error {
   constructor(
@@ -89,9 +89,22 @@ export async function readTextFile(root: string, path: string, maxBytes: number)
   }
 }
 
-export async function readYamlContract(root: string, path: string): Promise<unknown> {
+export async function readYamlContract(
+  root: string,
+  path: string,
+  captured?: Map<string, string>,
+): Promise<unknown> {
   const text = await readTextFile(root, path, CONTRACT_BYTE_LIMIT);
-  const parsed = parseDocument(text, { uniqueKeys: true, strict: true, version: "1.2" });
+  captured?.set(path, text);
+  return parseYamlContract(text, path);
+}
+
+export function parseYamlContract(text: string, path: string): unknown {
+  const parsed = parseDocument(text.replace(/^\uFEFF/, ""), {
+    uniqueKeys: true,
+    strict: true,
+    version: "1.2",
+  });
   if (parsed.errors.length > 0) {
     throw new ContractIssue("YAML_INVALID", path, parsed.errors[0]?.message ?? "Invalid YAML");
   }

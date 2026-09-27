@@ -1,0 +1,24 @@
+schema_version: 1
+id: CTX-001
+title: Build attributed task context
+outcome: A worker receives exact requirements and relevant implementation notes.
+depends_on: []
+complexity: normal
+risk: normal
+acceptance:
+  - id: A-CTX
+    statement: The pack is bounded and every excerpt is attributed.
+advances:
+  - C-CTX
+context:
+  topics:
+    - persistence
+    - restart
+    - provenance
+  required:
+    - PROJECT.md
+    - ARCHITECTURE.md
+evidence:
+  required:
+    - integration
+delivery: project-default

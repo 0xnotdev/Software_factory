@@ -29,11 +29,20 @@ export interface ValidationResult {
   diagnostics: Diagnostic[];
 }
 
-export async function validateProject(root: string): Promise<ValidationResult> {
+export async function validateProject(
+  root: string,
+  captured?: Map<string, string>,
+): Promise<ValidationResult> {
   const validators = await getValidators();
   const diagnostics: Diagnostic[] = [];
   const projectPath = ".factory/project.yaml";
-  const project = await load<ProjectContract>(root, projectPath, validators.project, diagnostics);
+  const project = await load<ProjectContract>(
+    root,
+    projectPath,
+    validators.project,
+    diagnostics,
+    captured,
+  );
   if (project === undefined) return result(root, null, [], [], diagnostics);
 
   const completion = await load<CompletionContract>(
@@ -41,12 +50,13 @@ export async function validateProject(root: string): Promise<ValidationResult> {
     project.completion,
     validators.completion,
     diagnostics,
+    captured,
   );
   const paths = await collectTaskPaths(root, diagnostics);
   const tasks: TaskContract[] = [];
   const taskFiles = new Map<string, string>();
   for (const path of paths) {
-    const task = await load<TaskContract>(root, path, validators.task, diagnostics);
+    const task = await load<TaskContract>(root, path, validators.task, diagnostics, captured);
     if (task === undefined) continue;
     if (taskFiles.has(task.id)) {
       diagnostics.push({
@@ -169,9 +179,10 @@ async function load<T>(
   path: string,
   validator: ValidateFunction,
   diagnostics: Diagnostic[],
+  captured?: Map<string, string>,
 ): Promise<T | undefined> {
   try {
-    const value = await readYamlContract(root, path);
+    const value = await readYamlContract(root, path, captured);
     if (!validator(value)) {
       for (const issue of validator.errors ?? []) {
         const at = issue.instancePath || "/";
