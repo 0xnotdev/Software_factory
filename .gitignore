@@ -1,0 +1,34 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+test/.tmp/
+
+# Factory runtime/generated state and context indexes
+.factory/state/
+.ctx/
+
+# Local probe outputs, temporary context packs, and transcripts
+docs/probes/tmp/
+docs/probes/*.tmp
+docs/probes/*.local.*
+docs/probes/*.transcript
+docs/probes/*.transcript.*
+docs/probes/*.pack.md
+*.transcript
+*.transcript.*
+
+# Local model artifacts (keep source fixtures trackable; ignore binary model payloads)
+models/**/*.gguf
+models/**/*.safetensors
+models/**/*.ckpt
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/*.tflite
+.factory/state/models/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
