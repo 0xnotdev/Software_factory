@@ -6,6 +6,9 @@ import { inspectFirstmateHome, FirstmateHomeError } from "./adapters/firstmate-h
 import { probeCtx, summarize, type CommandSummary } from "./adapters/ctx.js";
 import { probeTasksAxi, TasksAxiError } from "./adapters/tasks-axi.js";
 import { resolveExecutable, runCommand, type ExecutableResolution } from "./adapters/process.js";
+import { initProject, type InitResult } from "./core/init.js";
+import { ContractIssue } from "./core/load.js";
+import { validateProject, type ValidationResult } from "./core/validate.js";
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -50,6 +53,12 @@ interface JsonError {
   };
 }
 
+interface ValidateReport extends Omit<ValidationResult, "diagnostics"> {
+  schema_version: 1;
+  ok: true;
+  command: "validate";
+}
+
 class CliError extends Error {
   readonly code: string;
   readonly exitCode: number;
@@ -68,14 +77,40 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   let options = defaultOptions();
   try {
     options = parseArgs(argv);
-    if (options.command !== "doctor") {
-      throw new CliError("INVALID_COMMAND", "Expected command: doctor", 2, {
-        command: options.command,
-      });
+    if (options.command === "doctor") {
+      const report = await runDoctor(options);
+      writeOutput(options.json, report);
+      return report.ok ? 0 : 3;
     }
-    const report = await runDoctor(options);
-    writeOutput(options.json, report);
-    return report.ok ? 0 : 3;
+    if (options.command === "init") {
+      const root = await canonicalProjectRoot(options.root);
+      writeOutput(options.json, await initProject(root));
+      return 0;
+    }
+    if (options.command === "validate") {
+      const root = await canonicalProjectRoot(options.root);
+      const validation = await validateProject(root);
+      if (validation.diagnostics.length > 0) {
+        throw new CliError(
+          "VALIDATION_FAILED",
+          "Project contracts are invalid",
+          2,
+          validation.diagnostics,
+        );
+      }
+      const { diagnostics: _diagnostics, ...fields } = validation;
+      const report: ValidateReport = {
+        schema_version: 1,
+        ok: true,
+        command: "validate",
+        ...fields,
+      };
+      writeOutput(options.json, report);
+      return 0;
+    }
+    throw new CliError("INVALID_COMMAND", "Expected command: doctor, init, or validate", 2, {
+      command: options.command,
+    });
   } catch (error) {
     const normalized = normalizeError(error);
     const json = options.json || argv.includes("--json");
@@ -194,6 +229,21 @@ async function canonicalRoot(rootInput: string): Promise<string> {
       cause: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function canonicalProjectRoot(rootInput: string): Promise<string> {
+  const requested = await canonicalRoot(rootInput);
+  const command = await runCommand("git", ["rev-parse", "--show-toplevel"], {
+    cwd: requested,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+  });
+  if (command.exit_code !== 0) {
+    throw new CliError("VALIDATION_ERROR", "--root must be inside a Git repository", 2, {
+      root: requested,
+      stderr: command.stderr.trim(),
+    });
+  }
+  return await canonicalRoot(command.stdout.trim());
 }
 
 async function resolveAndProbe(
@@ -323,9 +373,21 @@ function readValue(argv: string[], index: number, flag: string): string {
   return value;
 }
 
-function writeOutput(json: boolean, report: DoctorReport): void {
+function writeOutput(json: boolean, report: DoctorReport | InitResult | ValidateReport): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  if (report.command === "init") {
+    process.stdout.write(
+      `Factory init: ${report.root}\ncreated: ${report.created.join(", ") || "nothing"}\n`,
+    );
+    return;
+  }
+  if (report.command === "validate") {
+    process.stdout.write(
+      `Factory validate: ${report.project_id}\ntasks: ${report.task_count}; conditions: ${report.condition_count}\n`,
+    );
     return;
   }
   process.stdout.write(
@@ -368,11 +430,14 @@ function normalizeError(error: unknown): CliError {
   if (error instanceof TasksAxiError) {
     return new CliError(error.code, error.message, error.exitCode, error.details);
   }
+  if (error instanceof ContractIssue) {
+    return new CliError("VALIDATION_FAILED", error.message, 2, [error.diagnostic()]);
+  }
   return new CliError("INTERNAL_ERROR", error instanceof Error ? error.message : String(error), 1);
 }
 
 function helpText(): string {
-  return `usage: factory doctor --home <disposable-firstmate-home> [--json]\n\nRead-only CP-00 integration boundary probe.\n\nOptions:\n  --root <path>              Project root to inspect (default: cwd)\n  --home <path>              Disposable Firstmate home to inspect (required)\n  --ctx-bin <path>           Override ctx executable\n  --tasks-bin <path>         Override tasks-axi executable\n  --json                     Print one schema_version=1 JSON object`;
+  return `usage: factory <doctor|init|validate> [--root <project>] [--json]\n\nCommands:\n  doctor --home <home>       Read-only integration boundary probe\n  init                       Create .factory directories and ignore runtime state\n  validate                   Check versioned contracts and dependency graph\n\nOptions:\n  --root <path>              Project root (default: cwd)\n  --home <path>              Disposable Firstmate home for doctor\n  --ctx-bin <path>           Override ctx executable for doctor\n  --tasks-bin <path>         Override tasks-axi executable for doctor\n  --json                     Print one schema_version=1 JSON object`;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

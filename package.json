@@ -10,8 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "format": "prettier --write \"{src,test,scripts,.github}/**/*.{ts,js,mjs,yml,yaml}\" \"*.json\" \"docs/probes/CP-00.md\"",
-    "format:check": "prettier --check \"{src,test,scripts,.github}/**/*.{ts,js,mjs,yml,yaml}\" \"*.json\" \"docs/probes/CP-00.md\"",
+    "format": "prettier --write \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
+    "format:check": "prettier --check \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "lint": "node scripts/lint.mjs",
     "factory": "node dist/src/cli.js"
   },
@@ -22,5 +22,9 @@
     "@types/node": "26.6.3",
     "prettier": "3.9.9",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.1"
   }
 }
