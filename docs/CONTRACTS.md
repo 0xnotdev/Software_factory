@@ -82,7 +82,7 @@ delivery: project-default
 
 `depends_on` names local task IDs, is acyclic, and cannot name self. `advances` names completion IDs and may be empty only for a task explicitly marked `kind: enabling`; enabling tasks still have testable outcomes. `complexity` is `bounded | normal | critical`; `risk` is `bounded | normal | critical` and controls review policy, not a specific model name. `delivery` defaults to `project-default` and cannot override the actual Firstmate project mode; if the project mode conflicts with a task request, validation blocks publication. All required evidence categories are verified by evidence receipts rather than assumed from task closure.
 
-## Receipt: `.factory/state/evidence/SAVE-001.json`
+## Task receipt: `.factory/state/evidence/SAVE-001.json`
 
 ```json
 {
@@ -105,7 +105,30 @@ delivery: project-default
 }
 ```
 
-The receipt is machine-generated from observed commands and files, not generated from an agent's declaration. It is valid only for its task contract and tested commit. Use a separate release-candidate receipt for `.factory/completion.yaml` conditions. The placeholders above document types, not literal values to copy into evidence.
+The receipt is machine-generated from observed commands and files, not generated from an agent's declaration. It is valid only for its task contract and tested release-candidate commit. The placeholders above document types, not literal values to copy into evidence.
+
+## Completion receipt: `.factory/state/completion/C-001.json`
+
+```json
+{
+  "schema_version": 1,
+  "condition_id": "C-001",
+  "completion_sha256": "<64 hexadecimal characters>",
+  "commit": "<full Git SHA>",
+  "result": {
+    "kind": "executable",
+    "status": "pass",
+    "check_id": "e2e-save-persist",
+    "command_id": "test-e2e-save-persist",
+    "exit_code": 0,
+    "artifact": "e2e/artifacts/save-persist.json",
+    "artifact_sha256": "<64 hexadecimal characters>"
+  },
+  "recorded_at": "2026-09-26T00:00:00Z"
+}
+```
+
+Executable completion receipts bind one completion condition to the exact `.factory/completion.yaml` digest, release-candidate commit, expected `check_id`, source-of-truth artifact path, artifact digest, and observed exit code. Observation completion receipts use `result.kind: "observation"` with a named `reviewer`, `status`, `artifact`, and `artifact_sha256`. A receipt is stale when its commit is not the current release-candidate SHA or its recorded completion digest is not present in that Git tree.
 
 ## Validation invariants
 
