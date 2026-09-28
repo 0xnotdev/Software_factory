@@ -87,9 +87,9 @@
 
 **Deliverable:** Pi's workflow classifies bounded/normal/critical risk, obtains precise review findings, and collects evidence appropriate to the task without rerunning no-mistakes' pipeline inside Factory.
 
-- [ ] Create tests/fixtures for critical auth isolation and normal API behavior, plus one simulated reviewer finding that causes repair and retest.
-- [ ] Run an actual worker task with only task/pack/evidence sources in a fresh context; inspect whether it needs missing docs.
-- [ ] **Gate:** P-06, P-07, and no change to Firstmate routing or shipping config by Factory.
+- [x] Create tests/fixtures for critical auth isolation and normal API behavior, plus one simulated reviewer finding that causes repair and retest.
+- [x] Run an actual worker task with only task/pack/evidence sources in a fresh context; inspect whether it needs missing docs.
+- [x] **Gate:** P-06, P-07, and no change to Firstmate routing or shipping config by Factory.
 
 ## CP-07 — Thin Pi command and status convenience
 
