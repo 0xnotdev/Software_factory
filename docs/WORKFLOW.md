@@ -33,10 +33,10 @@ A fresh worker receives this brief, the exact task contract, bounded pack, and e
 
 ## Risk and review
 
-| Risk | Examples | Required human/independent check |
-| --- | --- | --- |
-| bounded | isolated deterministic refactor, docs typo | ordinary project checks; Firstmate's standard delivery policy. |
-| normal | API behavior, persistence, UI journey | targeted integration/e2e evidence and a fresh semantic review when feasible. |
+| Risk     | Examples                                                                 | Required human/independent check                                                                              |
+| -------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| bounded  | isolated deterministic refactor, docs typo                               | ordinary project checks; Firstmate's standard delivery policy.                                                |
+| normal   | API behavior, persistence, UI journey                                    | targeted integration/e2e evidence and a fresh semantic review when feasible.                                  |
 | critical | authentication, tenancy, payments, destructive migration, external sends | explicit design constraints, negative tests, independent review, and human decision for consequential policy. |
 
 Risk is about consequences of error, not code size. Use the higher class when the contract understates an observed consequence, and stop for a human decision when critical policy or access is unresolved.
