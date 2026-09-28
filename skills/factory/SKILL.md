@@ -57,4 +57,4 @@ Apply must repeat preflight and fail closed. Never edit a backlog file directly,
 
 ## Current command limit
 
-At this checkpoint the implemented Factory CLI commands are only `doctor`, `init`, `validate`, `context`, and `sync --dry-run|--apply`. Do not invent `/factory`, `factory run`, `factory evidence`, `factory status`, or `factory inspect` invocations. Backlog closure alone never proves product completion.
+The implemented Factory CLI commands are `doctor`, `init`, `validate`, `context TASK-ID`, `sync --dry-run|--apply`, `evidence TASK-ID`, and `status` (including `status --json`). Use the actual installed CLI help when syntax matters. Do not invent `/factory`, `factory run`, or `factory inspect` invocations. Backlog closure alone never proves product completion.
