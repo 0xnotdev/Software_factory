@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { Ajv, type ValidateFunction } from "ajv";
-import { currentCommit } from "../adapters/git.js";
+import { currentCommit, gitFileSha256AtCommit } from "../adapters/git.js";
 import { sha256File } from "../adapters/process.js";
 import type { PublicationInput, PublicationTask } from "./plan.js";
 import { loadPublicationInput } from "./plan.js";
@@ -158,6 +158,16 @@ export async function evaluateTaskEvidence(
       path: item.contract_path,
     });
   }
+  stale.push(
+    ...(await verifyGitTreeDigest(
+      input.root,
+      receipt.commit,
+      item.contract_path,
+      receipt.contract_sha256,
+      "TASK_CONTRACT_NOT_IN_RELEASE",
+      "The task contract bytes are not present at the tested Git SHA",
+    )),
+  );
   if (receipt.commit !== releaseCandidate) {
     stale.push({
       code: "RELEASE_SHA_CHANGED",
@@ -202,6 +212,7 @@ export async function evaluateTaskEvidence(
 export async function evaluateConditionEvidence(input: {
   root: string;
   condition: CompletionCondition;
+  completionPath: string;
   completionSha256: string;
   releaseCandidate: string;
 }): Promise<ConditionEvidenceReport> {
@@ -238,6 +249,16 @@ export async function evaluateConditionEvidence(input: {
       message: "The completion contract digest differs from the recorded digest",
     });
   }
+  stale.push(
+    ...(await verifyGitTreeDigest(
+      input.root,
+      receipt.commit,
+      input.completionPath,
+      receipt.completion_sha256,
+      "COMPLETION_CONTRACT_NOT_IN_RELEASE",
+      "The completion contract bytes are not present at the tested Git SHA",
+    )),
+  );
   if (receipt.commit !== input.releaseCandidate) {
     stale.push({
       code: "RELEASE_SHA_CHANGED",
@@ -338,6 +359,19 @@ function conditionReport(
     tested_commit: testedCommit,
     issues,
   };
+}
+
+async function verifyGitTreeDigest(
+  root: string,
+  commit: string,
+  path: string,
+  expectedSha256: string,
+  code: string,
+  message: string,
+): Promise<EvidenceIssue[]> {
+  const actual = await gitFileSha256AtCommit(root, commit, path);
+  if (actual === expectedSha256) return [];
+  return [{ code, message, path }];
 }
 
 async function verifyArtifact(

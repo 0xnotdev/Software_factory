@@ -166,6 +166,27 @@ test("valid task evidence is bound to its exact contract and Git SHA", async () 
   }
 });
 
+test("dirty task contract cannot pass at unchanged HEAD", async () => {
+  const item = await fixture("evidence-dirty-task");
+  try {
+    await writeFile(item.taskPath, `${taskContract}# dirty but uncommitted\n`);
+    await writePassingReceipt(item);
+    const result = await factory(item.root);
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.valid, false);
+    assert.equal(report.status, "stale");
+    assert.equal(report.tested_commit, await head(item.root));
+    assert.ok(
+      report.issues.some(
+        (issue: { code: string }) => issue.code === "TASK_CONTRACT_NOT_IN_RELEASE",
+      ),
+    );
+  } finally {
+    await item.dispose();
+  }
+});
+
 for (const scenario of [
   "prose-only pass",
   "failed exit",

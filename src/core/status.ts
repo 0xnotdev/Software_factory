@@ -109,6 +109,7 @@ export async function projectStatus(options: StatusOptions): Promise<StatusRepor
         await evaluateConditionEvidence({
           root: options.root,
           condition,
+          completionPath: input.project.completion,
           completionSha256,
           releaseCandidate,
         }),

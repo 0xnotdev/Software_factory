@@ -295,3 +295,32 @@ test("a failed project check keeps all-closed work NOT COMPLETE", async () => {
     await item.dispose();
   }
 });
+
+test("dirty completion contract cannot pass at unchanged HEAD", async () => {
+  const item = await fixture("status-dirty-completion");
+  try {
+    await writeFile(item.completionPath, `${completion}# dirty but uncommitted\n`);
+    await writeCompletionReceipt(
+      item.root,
+      "C-PASS",
+      "pass-check",
+      "artifacts/pass.json",
+      0,
+      await head(item.root),
+      await sha256(item.completionPath),
+    );
+    const result = await factory(item);
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    const condition = report.product.conditions.find((candidate: any) => candidate.id === "C-PASS");
+    assert.equal(condition.status, "stale");
+    assert.ok(
+      condition.issues.some(
+        (issue: { code: string }) => issue.code === "COMPLETION_CONTRACT_NOT_IN_RELEASE",
+      ),
+    );
+    assert.equal(report.product.status, "NOT COMPLETE");
+  } finally {
+    await item.dispose();
+  }
+});
