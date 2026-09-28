@@ -71,7 +71,7 @@
 
 - [x] Write the skill using `docs/WORKFLOW.md`; explain what the CLI does, when to use it, and when to stop for a real decision.
 - [x] Load it in Pi, invoke it explicitly and automatically, and confirm it uses existing commands rather than narrating a fictional `/factory run`.
-- [ ] Publish CP-05 as a testable task in Factory's own backlog, then observe real Firstmate dispatch and closure. **Gate:** F-09 and the first real task/worker trace. Dogfooding remains unproven if only task publication succeeds.
+- [x] Publish CP-05 as a testable task in Factory's own backlog, then observe real Firstmate dispatch and closure. **Gate:** F-09 and the first real task/worker trace. Dogfooding remains unproven if only task publication succeeds.
 
 ## CP-05 — Evidence and independent completion
 
