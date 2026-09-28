@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    { "$ref": "#/definitions/task_receipt" },
+    { "$ref": "#/definitions/completion_receipt" }
+  ],
+  "definitions": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "command_id", "exit_code", "artifact", "artifact_sha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pass", "fail"] },
+        "command_id": { "type": "string", "minLength": 1 },
+        "exit_code": { "type": "integer" },
+        "artifact": { "type": "string", "minLength": 1 },
+        "artifact_sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifact"],
+      "properties": {
+        "status": { "enum": ["pass", "fail", "pending"] },
+        "artifact": { "type": ["string", "null"] }
+      }
+    },
+    "task_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "contract_sha256",
+        "commit",
+        "checks",
+        "recorded_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "contract_sha256": { "$ref": "#/definitions/sha256" },
+        "commit": { "$ref": "#/definitions/commit" },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/check" }
+        },
+        "review": { "$ref": "#/definitions/review" },
+        "recorded_at": { "type": "string", "minLength": 1 }
+      }
+    },
+    "completion_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "status",
+            "check_id",
+            "command_id",
+            "exit_code",
+            "artifact",
+            "artifact_sha256"
+          ],
+          "properties": {
+            "kind": { "const": "executable" },
+            "status": { "enum": ["pass", "fail"] },
+            "check_id": { "type": "string", "minLength": 1 },
+            "command_id": { "type": "string", "minLength": 1 },
+            "exit_code": { "type": "integer" },
+            "artifact": { "type": "string", "minLength": 1 },
+            "artifact_sha256": { "$ref": "#/definitions/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "status", "reviewer", "artifact", "artifact_sha256"],
+          "properties": {
+            "kind": { "const": "observation" },
+            "status": { "enum": ["pass", "fail"] },
+            "reviewer": { "type": "string", "minLength": 1 },
+            "artifact": { "type": "string", "minLength": 1 },
+            "artifact_sha256": { "$ref": "#/definitions/sha256" }
+          }
+        }
+      ]
+    },
+    "completion_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "condition_id",
+        "completion_sha256",
+        "commit",
+        "result",
+        "recorded_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "condition_id": { "type": "string", "minLength": 1 },
+        "completion_sha256": { "$ref": "#/definitions/sha256" },
+        "commit": { "$ref": "#/definitions/commit" },
+        "result": { "$ref": "#/definitions/completion_result" },
+        "recorded_at": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

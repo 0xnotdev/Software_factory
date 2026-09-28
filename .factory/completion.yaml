@@ -1,0 +1,15 @@
+schema_version: 1
+project: factory
+conditions:
+  - id: P-03
+    outcome: Task evidence is linked to the exact task contract and tested Git SHA, and a failed or stale result cannot be marked passed.
+    method: executable
+    check_id: task-evidence-staleness
+    evidence: .factory/state/acceptance/P-03.json
+  - id: P-04
+    outcome: Product completion reports independently from backlog status and remains incomplete when a project-level check fails after every task closes.
+    method: executable
+    check_id: independent-product-completion
+    evidence: .factory/state/acceptance/P-04.json
+metadata:
+  scope: Initial dogfood contract containing only the independent completion conditions advanced by CP-05; COMPLETION.md remains authoritative for every Factory V0 and V1 gate.

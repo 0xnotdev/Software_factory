@@ -55,4 +55,4 @@ Decisions belong in tracked product docs or ADRs once made. A worker does not in
 
 ## Reports
 
-`factory status` reports counts of queued/in-flight/done from the selected Firstmate home, counts of passed/failed/stale/unverified project conditions, the tested release candidate SHA, and only actionable human decisions. Avoid a single percentage that combines backlog with product acceptance. `factory inspect <ID>` and a Pi `/factory` wrapper are later conveniences, not V0 prerequisites.
+`factory status` reports counts of queued/in-flight/done from the selected Firstmate home, passed/failed/stale/unverified task evidence and project conditions, the tested release candidate SHA, and only actionable human decisions. Avoid a single percentage that combines backlog with product acceptance. `factory inspect <ID>` and a Pi `/factory` wrapper are later conveniences, not V0 prerequisites.

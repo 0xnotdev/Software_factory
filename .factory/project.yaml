@@ -1,0 +1,27 @@
+schema_version: 1
+id: factory
+name: Factory
+intent: Turn a small, explicit software intent and independently written completion conditions into bounded task contracts that Pi can reason about, CTX can contextualize, and Firstmate can execute and ship through its existing controls.
+audience: One engineer building greenfield software with Pi, Firstmate, Herdr, Treehouse, tasks-axi, no-mistakes, and CTX.
+goals:
+  - Validate project, task, and completion contracts deterministically.
+  - Package bounded authoritative context and safely publish reviewed tasks to a named Firstmate home.
+  - Report task evidence separately from independent product completion.
+non_goals:
+  - Replace Firstmate, tasks-axi, CTX, no-mistakes, Treehouse, or Herdr.
+  - Add a scheduler, model router, worktree manager, hosted service, or automatic deployment.
+constraints:
+  - Original tracked project documents are authoritative; retrieved excerpts and generated summaries are not.
+  - Firstmate alone owns worker dispatch, lifecycle, and delivery controls.
+  - Backlog closure alone never proves product completion.
+  - Publication must fail closed on an unverified home, backend, tool version, contract, or conflict.
+documents:
+  required:
+    - PROJECT.md
+    - ARCHITECTURE.md
+    - COMPLETION.md
+    - BUILD_PLAN.md
+    - docs/CONTRACTS.md
+completion: .factory/completion.yaml
+metadata:
+  authority: PROJECT.md
