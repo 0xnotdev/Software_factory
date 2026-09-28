@@ -24,6 +24,11 @@ import {
   type ExecutableResolution,
 } from "./adapters/process.js";
 import { ContextIssue, generateContextPack, type ContextResult } from "./core/context.js";
+import {
+  EvidenceIssueError,
+  inspectTaskEvidence,
+  type TaskEvidenceReport,
+} from "./core/evidence.js";
 import { initProject, type InitResult } from "./core/init.js";
 import { ContractIssue } from "./core/load.js";
 import {
@@ -34,6 +39,7 @@ import {
   type PublicationInput,
   type PublicationPlan,
 } from "./core/plan.js";
+import { projectStatus, type StatusReport } from "./core/status.js";
 import { validateProject, type ValidationResult } from "./core/validate.js";
 
 const SCHEMA_VERSION = 1;
@@ -185,9 +191,41 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       writeOutput(options.json, await runSync(options));
       return 0;
     }
+    if (options.command === "evidence") {
+      if (options.taskId === null) {
+        throw new CliError("VALIDATION_ERROR", "evidence requires TASK-ID", 2);
+      }
+      const root = await canonicalProjectRoot(options.root);
+      writeOutput(options.json, await inspectTaskEvidence(root, options.taskId));
+      return 0;
+    }
+    if (options.command === "status") {
+      const root = await canonicalProjectRoot(options.root);
+      let tasksPath: string | null = null;
+      if (options.home !== null) {
+        const resolution = await resolveExecutable("tasks-axi", options.bins["tasks-axi"]);
+        if (!resolution.found || resolution.path === null) {
+          throw new CliError("TOOL_UNAVAILABLE", "Required tool is unavailable: tasks-axi", 3, {
+            tool: "tasks-axi",
+            resolution,
+          });
+        }
+        tasksPath = resolution.path;
+      }
+      writeOutput(
+        options.json,
+        await projectStatus({
+          root,
+          home: options.home,
+          tasksPath,
+          timeoutMs: options.timeoutMs,
+        }),
+      );
+      return 0;
+    }
     throw new CliError(
       "INVALID_COMMAND",
-      "Expected command: doctor, init, validate, context, or sync",
+      "Expected command: doctor, init, validate, context, sync, evidence, or status",
       2,
       {
         command: options.command,
@@ -626,7 +664,11 @@ function parseArgs(argv: string[]): CliOptions {
       options.command = arg;
       continue;
     }
-    if (!arg.startsWith("-") && options.command === "context" && options.taskId === null) {
+    if (
+      !arg.startsWith("-") &&
+      (options.command === "context" || options.command === "evidence") &&
+      options.taskId === null
+    ) {
       options.taskId = arg;
       continue;
     }
@@ -714,7 +756,14 @@ function positiveInteger(value: string, flag: string): number {
 
 function writeOutput(
   json: boolean,
-  report: DoctorReport | InitResult | ValidateReport | ContextResult | SyncReport,
+  report:
+    | DoctorReport
+    | InitResult
+    | ValidateReport
+    | ContextResult
+    | SyncReport
+    | TaskEvidenceReport
+    | StatusReport,
 ): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -741,6 +790,18 @@ function writeOutput(
   if (report.command === "sync") {
     process.stdout.write(
       `Factory sync (${report.mode}): ${report.project.id}\ncreate: ${report.summary.create}; unchanged: ${report.summary.unchanged}; conflict: ${report.summary.conflict}; blocked: ${report.summary.blocked}\n`,
+    );
+    return;
+  }
+  if (report.command === "evidence") {
+    process.stdout.write(
+      `Factory evidence: ${report.task_id}\nstatus: ${report.status}; tested: ${report.tested_commit ?? "none"}; release: ${report.release_candidate}\n`,
+    );
+    return;
+  }
+  if (report.command === "status") {
+    process.stdout.write(
+      `Factory status: ${report.product.status}\nbacklog done: ${report.backlog.summary.done}; product passed: ${report.product.summary.passed}; failed: ${report.product.summary.failed}; stale: ${report.product.summary.stale}; unverified: ${report.product.summary.unverified}\n`,
     );
     return;
   }
@@ -790,6 +851,9 @@ function normalizeError(error: unknown): CliError {
   if (error instanceof ContextIssue) {
     return new CliError(error.code, error.message, 3, error.details);
   }
+  if (error instanceof EvidenceIssueError) {
+    return new CliError(error.code, error.message, 2, error.details);
+  }
   if (error instanceof PublicationIssue) {
     return new CliError(error.code, error.message, error.exitCode, error.details);
   }
@@ -797,7 +861,7 @@ function normalizeError(error: unknown): CliError {
 }
 
 function helpText(): string {
-  return `usage: factory <doctor|init|validate|context TASK-ID|sync --dry-run|--apply> [--root <project>] [--json]\n\nCommands:\n  doctor --home <home>       Read-only integration boundary probe\n  init                       Create .factory directories and ignore runtime state\n  validate                   Check versioned contracts and dependency graph\n  context TASK-ID            Write a bounded attributed context pack and receipt\n  sync --dry-run --home HOME Preview create-only backlog reconciliation\n  sync --apply --home HOME   Publish after a fresh conflict-free preflight\n\nOptions:\n  --root <path>              Project root (default: cwd)\n  --home <path>              Explicit canonical Firstmate home\n  --ctx-bin <path>           Override ctx executable\n  --tasks-bin <path>         Override tasks-axi executable\n  --token-budget <count>     Override the task token budget\n  --byte-budget <count>      Override the task byte ceiling\n  --json                     Print one schema_version=1 JSON object`;
+  return `usage: factory <doctor|init|validate|context TASK-ID|sync --dry-run|--apply|evidence TASK-ID|status> [--root <project>] [--json]\n\nCommands:\n  doctor --home <home>       Read-only integration boundary probe\n  init                       Create .factory directories and ignore runtime state\n  validate                   Check versioned contracts and dependency graph\n  context TASK-ID            Write a bounded attributed context pack and receipt\n  sync --dry-run --home HOME Preview create-only backlog reconciliation\n  sync --apply --home HOME   Publish after a fresh conflict-free preflight\n  evidence TASK-ID           Validate task evidence against contract and Git SHA\n  status [--home HOME]       Report backlog and product completion separately\n\nOptions:\n  --root <path>              Project root (default: cwd)\n  --home <path>              Explicit canonical Firstmate home\n  --ctx-bin <path>           Override ctx executable\n  --tasks-bin <path>         Override tasks-axi executable\n  --token-budget <count>     Override the task token budget\n  --byte-budget <count>      Override the task byte ceiling\n  --json                     Print one schema_version=1 JSON object`;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

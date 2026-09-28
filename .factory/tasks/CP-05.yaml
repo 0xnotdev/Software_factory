@@ -1,0 +1,26 @@
+schema_version: 1
+id: CP-05
+title: Bind evidence to task contracts and independent product completion
+outcome: Factory reports task evidence separately from project completion and rejects failed or stale proof.
+depends_on: []
+complexity: normal
+risk: normal
+acceptance:
+  - id: CP05-EVIDENCE
+    statement: Prose-only pass claims, failed exits, changed contracts, changed release SHAs, and missing artifacts cannot produce valid passing evidence.
+  - id: CP05-STATUS
+    statement: factory status --json reports backlog progress separately from passed, failed, stale, and unverified product conditions.
+  - id: P-03
+    statement: Task evidence is bound to the exact task contract and tested Git SHA, and becomes stale after either changes.
+  - id: P-04
+    statement: Product completion remains NOT COMPLETE when a project-level check fails even after every task is closed.
+advances: [P-03, P-04]
+context:
+  topics: [evidence receipts, stale proof, release candidate, independent completion]
+  required: [PROJECT.md, ARCHITECTURE.md, COMPLETION.md, BUILD_PLAN.md, docs/CONTRACTS.md]
+evidence:
+  required: [unit, integration]
+delivery: project-default
+metadata:
+  checkpoint: CP-05
+  implementation_files: src/core/evidence.ts, src/core/status.ts, schemas/evidence.schema.json, test/evidence.test.ts, test/status.test.ts
