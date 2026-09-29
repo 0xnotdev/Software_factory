@@ -1,0 +1,19 @@
+schema_version: 1
+id: COPY-001
+title: Clarify empty-state copy
+outcome: Empty-state text is direct and actionable.
+depends_on: []
+complexity: bounded
+risk: bounded
+acceptance:
+  - {
+      id: A-COPY,
+      statement: Empty-state copy names the next action without implying an existing record.,
+    }
+advances: [C-COPY]
+context:
+  topics: [empty state, interface copy, next action]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/STYLE.md]
+evidence:
+  required: [unit]
+delivery: project-default

@@ -1,0 +1,16 @@
+schema_version: 1
+id: API-001
+title: Stabilize profile API errors
+outcome: Invalid profile requests return stable machine-readable errors.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-API, statement: Malformed JSON and blank profiles return their specified 400 errors. }
+advances: [C-API]
+context:
+  topics: [profile API, malformed JSON, stable errors]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/API.md]
+evidence:
+  required: [integration]
+delivery: project-default

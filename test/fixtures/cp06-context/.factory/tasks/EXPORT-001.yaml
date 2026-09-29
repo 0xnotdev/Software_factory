@@ -1,0 +1,16 @@
+schema_version: 1
+id: EXPORT-001
+title: Produce deterministic exports
+outcome: An unchanged dataset exports to identical UTF-8 JSON bytes.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-EXPORT, statement: Record and object-key order are stable across repeated exports. }
+advances: [C-EXPORT]
+context:
+  topics: [UTF-8 JSON, deterministic export, stable order]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/EXPORT.md]
+evidence:
+  required: [integration]
+delivery: project-default

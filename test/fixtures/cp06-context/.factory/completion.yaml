@@ -1,0 +1,73 @@
+schema_version: 1
+project: cp06-ten-pack
+conditions:
+  - {
+      id: C-COPY,
+      outcome: Copy follows the style authority.,
+      method: executable,
+      check_id: copy,
+      evidence: evidence/COPY.json,
+    }
+  - {
+      id: C-CONFIG,
+      outcome: Configuration precedence is stable.,
+      method: executable,
+      check_id: config,
+      evidence: evidence/CONFIG.json,
+    }
+  - {
+      id: C-API,
+      outcome: API errors are stable.,
+      method: executable,
+      check_id: api,
+      evidence: evidence/API.json,
+    }
+  - {
+      id: C-PERSIST,
+      outcome: Saved records survive restart.,
+      method: executable,
+      check_id: persist,
+      evidence: evidence/PERSIST.json,
+    }
+  - {
+      id: C-UI,
+      outcome: Empty state is accessible.,
+      method: executable,
+      check_id: ui,
+      evidence: evidence/UI.json,
+    }
+  - {
+      id: C-IMPORT,
+      outcome: Invalid import rows are reported.,
+      method: executable,
+      check_id: import,
+      evidence: evidence/IMPORT.json,
+    }
+  - {
+      id: C-LOG,
+      outcome: Logs redact record content.,
+      method: executable,
+      check_id: log,
+      evidence: evidence/LOG.json,
+    }
+  - {
+      id: C-EXPORT,
+      outcome: Export order is deterministic.,
+      method: executable,
+      check_id: export,
+      evidence: evidence/EXPORT.json,
+    }
+  - {
+      id: C-DELETE,
+      outcome: Deletion is non-disclosing.,
+      method: executable,
+      check_id: delete,
+      evidence: evidence/DELETE.json,
+    }
+  - {
+      id: C-AUTH,
+      outcome: Ownership derives from the principal.,
+      method: executable,
+      check_id: auth,
+      evidence: evidence/AUTH.json,
+    }

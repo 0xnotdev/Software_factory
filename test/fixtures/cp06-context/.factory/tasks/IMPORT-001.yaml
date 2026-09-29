@@ -1,0 +1,16 @@
+schema_version: 1
+id: IMPORT-001
+title: Report invalid import rows
+outcome: Invalid rows are reported without changing valid-row order or the source.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-IMPORT, statement: Stable row numbers and reasons identify invalid rows. }
+advances: [C-IMPORT]
+context:
+  topics: [import rows, validation reasons, input order]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/IMPORT.md]
+evidence:
+  required: [integration]
+delivery: project-default

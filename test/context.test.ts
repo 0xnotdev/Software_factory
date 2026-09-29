@@ -115,6 +115,33 @@ test("context writes exact mandatory sources, merges overlapping excerpts, and r
   }
 });
 
+test("context limits CTX retrieval to the task-local source selection", async () => {
+  const fixture = await seeded("source-filter");
+  try {
+    await writeFile(
+      join(fixture.root, "docs/TARGET.md"),
+      "# Target authority\n\nOnly this task-local source is relevant.\n",
+    );
+    await writeFile(
+      join(fixture.root, ".factory/tasks/CTX-001.yaml"),
+      taskContract.replace(
+        "required: [PROJECT.md, ARCHITECTURE.md]",
+        "required: [PROJECT.md, ARCHITECTURE.md, docs/TARGET.md]",
+      ),
+    );
+
+    const result = await factory(fixture, { mode: "source-filter" });
+    assert.equal(result.exit, 0, result.stderr || result.stdout);
+    const payload = parseObject(result.stdout);
+    const pack = await readFile(join(fixture.root, payload.pack_path), "utf8");
+    assert.match(pack, /Only this task-local source is relevant\./);
+    assert.doesNotMatch(pack, /The overlapping excerpt sentinel/);
+    assert.equal(payload.source_digests["docs/EXTRA.md"], undefined);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("context permits explicitly reported lexical fallback only when retrieval is sufficient", async () => {
   const fixture = await seeded("lexical");
   try {
@@ -572,12 +599,14 @@ if (command === "doctor") {
   process.exit(0);
 }
 if (command === "pack") {
-  const relative = "docs/EXTRA.md";
+  const selectedDocuments = args.flatMap((arg, index) => arg === "--document" ? [args[index + 1]] : []);
+  const sourceFiltered = mode === "source-filter" && selectedDocuments.includes("docs/TARGET.md");
+  const relative = sourceFiltered ? "docs/TARGET.md" : "docs/EXTRA.md";
   const full = fs.readFileSync(path.join(root, relative), "utf8");
-  const firstEnd = full.indexOf("Gamma context ends here.");
-  const secondStart = full.indexOf("The overlapping excerpt sentinel");
+  const firstEnd = sourceFiltered ? full.length : full.indexOf("Gamma context ends here.");
+  const secondStart = sourceFiltered ? 0 : full.indexOf("The overlapping excerpt sentinel");
   const item = (start, end, text = full.slice(start, end)) => ({source:{source_type:"excerpt",text,provenance:{document_path:relative,document_sha256:hash(full),start_line:1,end_line:6,start_offset:start,end_offset:end,range_sha256:hash(text),index_generation:7}},estimated_tokens:Math.ceil(Buffer.byteLength(text)/3)});
-  const items = [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
+  const items = sourceFiltered ? [item(0, full.length)] : [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
   if (mode === "aliases") {
     items[1].source.provenance.document_path = "docs/EXTRA-ALIAS.md";
     const original = fs.readFileSync(path.join(root, "docs/PROJECT-ALIAS.md"), "utf8");

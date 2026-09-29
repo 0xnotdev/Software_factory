@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "rule": "PROJECT.md and ARCHITECTURE.md are relevant global authority; for each task only its declared target source is relevant topical authority; every other topical document is irrelevant.",
+  "tasks": [
+    { "id": "COPY-001", "risk": "bounded", "target": "docs/STYLE.md" },
+    { "id": "CONFIG-001", "risk": "bounded", "target": "docs/CONFIG.md" },
+    { "id": "API-001", "risk": "normal", "target": "docs/API.md" },
+    { "id": "PERSIST-001", "risk": "normal", "target": "docs/PERSISTENCE.md" },
+    { "id": "UI-001", "risk": "normal", "target": "docs/UI.md" },
+    { "id": "IMPORT-001", "risk": "normal", "target": "docs/IMPORT.md" },
+    { "id": "LOG-001", "risk": "normal", "target": "docs/OBSERVABILITY.md" },
+    { "id": "EXPORT-001", "risk": "normal", "target": "docs/EXPORT.md" },
+    { "id": "DELETE-001", "risk": "critical", "target": "docs/DELETION.md" },
+    { "id": "AUTH-001", "risk": "critical", "target": "docs/AUTH.md" }
+  ]
+}
