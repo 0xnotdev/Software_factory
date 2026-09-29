@@ -1,0 +1,16 @@
+schema_version: 1
+id: PERSIST-001
+title: Preserve records across restart
+outcome: A successful save remains visible after restart.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-PERSIST, statement: Restarting against the same store retains the saved record. }
+advances: [C-PERSIST]
+context:
+  topics: [save, restart, local store]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/PERSISTENCE.md]
+evidence:
+  required: [integration]
+delivery: project-default

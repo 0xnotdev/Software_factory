@@ -1,0 +1,16 @@
+schema_version: 1
+id: UI-001
+title: Make empty state accessible
+outcome: The empty view exposes one labeled keyboard-reachable action.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-UI, statement: Heading action label and focus order satisfy the empty-state contract. }
+advances: [C-UI]
+context:
+  topics: [empty view, keyboard focus, programmatic label]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/UI.md]
+evidence:
+  required: [integration]
+delivery: project-default
