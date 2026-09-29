@@ -67,7 +67,7 @@ evidence:
 delivery: project-default
 `;
 
-test("context writes exact mandatory sources, merges overlapping excerpts, and records provenance", async () => {
+test("context writes exact mandatory sources and records provenance", async () => {
   const fixture = await seeded("success with spaces");
   try {
     const result = await factory(fixture, { mode: "semantic" });
@@ -91,10 +91,7 @@ test("context writes exact mandatory sources, merges overlapping excerpts, and r
     assert.ok(pack.includes(architecture));
     assert.match(pack, /Source: `PROJECT\.md`/);
     assert.match(pack, /CTX generation: `7`/);
-    assert.equal(
-      count(pack, "The overlapping excerpt sentinel appears exactly once in the source."),
-      1,
-    );
+    assert.doesNotMatch(pack, /The overlapping excerpt sentinel/);
     await assert.rejects(stat(join(fixture.root, "CONTEXT-PWNED")));
 
     const receipt = parseObject(await readFile(join(fixture.root, payload.receipt_path), "utf8"));
@@ -107,7 +104,7 @@ test("context writes exact mandatory sources, merges overlapping excerpts, and r
       receipt.source_digests["ARCHITECTURE.md"],
       payload.source_digests["ARCHITECTURE.md"],
     );
-    assert.match(receipt.source_digests["docs/EXTRA.md"], /^[a-f0-9]{64}$/);
+    assert.equal(receipt.source_digests["docs/EXTRA.md"], undefined);
     assert.equal(receipt.ctx.index_generation, 7);
     assert.equal(receipt.ctx.retrieval_mode, "HYBRID_SEMANTIC");
   } finally {
@@ -137,6 +134,33 @@ test("context limits CTX retrieval to the task-local source selection", async ()
     assert.match(pack, /Only this task-local source is relevant\./);
     assert.doesNotMatch(pack, /The overlapping excerpt sentinel/);
     assert.equal(payload.source_digests["docs/EXTRA.md"], undefined);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("context blocks CTX provenance outside the task-local source selection", async () => {
+  const fixture = await seeded("source-filter-adversarial");
+  try {
+    await writeFile(
+      join(fixture.root, "docs/TARGET.md"),
+      "# Target authority\n\nOnly this task-local source is relevant.\n",
+    );
+    await writeFile(
+      join(fixture.root, ".factory/tasks/CTX-001.yaml"),
+      taskContract.replace(
+        "required: [PROJECT.md, ARCHITECTURE.md]",
+        "required: [PROJECT.md, ARCHITECTURE.md, docs/TARGET.md]",
+      ),
+    );
+
+    const result = await factory(fixture, { mode: "source-filter-adversarial" });
+    assert.equal(result.exit, 3, result.stderr || result.stdout);
+    const payload = parseObject(result.stdout);
+    assert.equal(payload.error.code, "CONTEXT_BLOCKED");
+    assert.equal(payload.error.details.reason, "RETRIEVAL_SCOPE_WIDENED");
+    assert.equal(payload.error.details.path, "docs/EXTRA.md");
+    await assertNoPack(fixture.root);
   } finally {
     await fixture.dispose();
   }
@@ -427,19 +451,15 @@ test("context deduplicates mandatory and retrieved symlink identities", async ()
     const payload = parseObject(result.stdout);
     const pack = await readFile(join(fixture.root, payload.pack_path), "utf8");
     assert.equal(count(pack, await readFile(join(fixture.root, "PROJECT.md"), "utf8")), 1);
+    assert.doesNotMatch(pack, /The overlapping excerpt sentinel/);
+    assert.ok(pack.includes("docs/PROJECT-ALIAS.md"));
     assert.equal(
-      count(pack, "The overlapping excerpt sentinel appears exactly once in the source."),
-      1,
+      payload.source_digests["docs/PROJECT-ALIAS.md"],
+      createHash("sha256")
+        .update(await readFile(join(fixture.root, "docs/PROJECT-ALIAS.md")))
+        .digest("hex"),
     );
-    for (const path of ["docs/PROJECT-ALIAS.md", "docs/EXTRA-ALIAS.md"]) {
-      assert.ok(pack.includes(path));
-      assert.equal(
-        payload.source_digests[path],
-        createHash("sha256")
-          .update(await readFile(join(fixture.root, path)))
-          .digest("hex"),
-      );
-    }
+    assert.equal(payload.source_digests["docs/EXTRA-ALIAS.md"], undefined);
   } finally {
     await fixture.dispose();
   }
@@ -620,15 +640,17 @@ if (command === "doctor") {
 if (command === "pack") {
   const selectedDocuments = args.flatMap((arg, index) => arg === "--document" ? [args[index + 1]] : []);
   const sourceFiltered = mode === "source-filter" && selectedDocuments.includes("docs/TARGET.md");
+  const adversarialScope = mode === "source-filter-adversarial";
   const globalsOnly = mode === "empty-source-selection" && selectedDocuments.length === 2 && selectedDocuments.includes("PROJECT.md") && selectedDocuments.includes("ARCHITECTURE.md");
-  const relative = sourceFiltered ? "docs/TARGET.md" : globalsOnly ? "PROJECT.md" : "docs/EXTRA.md";
+  const relative = adversarialScope ? "docs/EXTRA.md" : sourceFiltered ? "docs/TARGET.md" : globalsOnly ? "PROJECT.md" : selectedDocuments[0] || "docs/EXTRA.md";
   const full = fs.readFileSync(path.join(root, relative), "utf8");
-  const firstEnd = sourceFiltered ? full.length : full.indexOf("Gamma context ends here.");
-  const secondStart = sourceFiltered ? 0 : full.indexOf("The overlapping excerpt sentinel");
+  const sentinelEnd = full.indexOf("Gamma context ends here.");
+  const firstEnd = sourceFiltered || globalsOnly || sentinelEnd < 0 ? full.length : sentinelEnd;
+  const sentinelStart = full.indexOf("The overlapping excerpt sentinel");
+  const secondStart = sourceFiltered || globalsOnly || sentinelStart < 0 ? 0 : sentinelStart;
   const item = (start, end, text = full.slice(start, end)) => ({source:{source_type:"excerpt",text,provenance:{document_path:relative,document_sha256:hash(full),start_line:1,end_line:6,start_offset:start,end_offset:end,range_sha256:hash(text),index_generation:7}},estimated_tokens:Math.ceil(Buffer.byteLength(text)/3)});
-  const items = sourceFiltered || globalsOnly ? [item(0, full.length)] : [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
+  const items = sourceFiltered || globalsOnly || sentinelEnd < 0 ? [item(0, full.length)] : [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
   if (mode === "aliases") {
-    items[1].source.provenance.document_path = "docs/EXTRA-ALIAS.md";
     const original = fs.readFileSync(path.join(root, "docs/PROJECT-ALIAS.md"), "utf8");
     items.push({source:{text:original,provenance:{document_path:"docs/PROJECT-ALIAS.md",document_sha256:hash(original),start_offset:0,end_offset:[...original].length,index_generation:7}}});
   }

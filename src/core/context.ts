@@ -143,6 +143,7 @@ export async function generateContextPack(options: {
     input.task.context.required.length > 0
       ? input.task.context.required
       : input.project.documents.required;
+  const retrievalIdentities = selectedRetrievalIdentities(input.sources, retrievalDocuments);
   const packArgs = [
     "pack",
     contextQuery(input.task),
@@ -190,6 +191,7 @@ export async function generateContextPack(options: {
     generation,
     input.sources,
     allSourceDigests,
+    retrievalIdentities,
   );
 
   const markdown = renderPack({
@@ -406,12 +408,31 @@ function assertSameSnapshot(path: string, captured: string | undefined, actual: 
   }
 }
 
+function selectedRetrievalIdentities(sources: SourceFile[], selectedPaths: string[]): Set<string> {
+  const identities = new Set<string>();
+  const missing: string[] = [];
+  for (const path of selectedPaths) {
+    const source = sources.find((candidate) => candidate.aliases.includes(path));
+    if (source === undefined) missing.push(path);
+    else identities.add(source.identity);
+  }
+  if (missing.length > 0) {
+    blocked("CTX retrieval scope did not match the validated mandatory sources", {
+      reason: "RETRIEVAL_SCOPE_INVALID",
+      selected_documents: selectedPaths,
+      missing_documents: missing,
+    });
+  }
+  return identities;
+}
+
 async function verifiedRanges(
   root: string,
   pack: Record<string, unknown>,
   generation: number,
   mandatory: SourceFile[],
   digests: Record<string, string>,
+  allowedIdentities: Set<string>,
 ): Promise<RetrievedRange[]> {
   if (!Array.isArray(pack.items)) {
     blocked("CTX pack omitted its items array", { reason: "CTX_PACK_INVALID" });
@@ -472,6 +493,12 @@ async function verifiedRanges(
         path,
         start_offset: startOffset,
         end_offset: endOffset,
+      });
+    }
+    if (!allowedIdentities.has(document.identity)) {
+      blocked("CTX excerpt provenance was outside the selected retrieval scope", {
+        reason: "RETRIEVAL_SCOPE_WIDENED",
+        path,
       });
     }
     assertSameSnapshot(path, snapshots.get(document.identity), document.sha256);
