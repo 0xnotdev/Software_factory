@@ -30,14 +30,14 @@ no-mistakes documents a review → test → document → lint → push → PR �
 
 ## Probe matrix
 
-| Probe | Failure response |
-| --- | --- |
-| CTX actual version/JSON/CLI flags | Block context pack and show install-specific diagnostic. |
-| Pi installed import namespace and skill discovery | Keep CLI usable; defer extension/skill packaging. |
-| Firstmate home identity and registered project | Block sync. |
-| tasks-axi version, backend, dependency commands | Block sync; provide dry-run export for manual inspection only. |
-| no-mistakes gate in intended project mode | Block automated shipping claims; continue local deterministic checks. |
-| Windows/macOS path behavior | Report platform limitation honestly; do not claim cross-platform gate. |
+| Probe                                             | Failure response                                                       |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| CTX actual version/JSON/CLI flags                 | Block context pack and show install-specific diagnostic.               |
+| Pi installed import namespace and skill discovery | Keep CLI usable; defer extension/skill packaging.                      |
+| Firstmate home identity and registered project    | Block sync.                                                            |
+| tasks-axi version, backend, dependency commands   | Block sync; provide dry-run export for manual inspection only.         |
+| no-mistakes gate in intended project mode         | Block automated shipping claims; continue local deterministic checks.  |
+| Windows/macOS path behavior                       | Report platform limitation honestly; do not claim cross-platform gate. |
 
 ## Primary documents
 

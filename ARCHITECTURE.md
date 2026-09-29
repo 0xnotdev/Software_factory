@@ -65,15 +65,15 @@ The tracked `.factory/completion.yaml` is authored before task implementation. I
 
 ## Failures and trust boundaries
 
-| Failure | Required response |
-| --- | --- |
-| CTX unavailable or index stale | Do not make up context; exact required files still available for manual work; context command exits blocked. |
-| Firstmate home absent or not registered | Publication blocked; preview shows required setup. |
-| tasks-axi CLI/version/backend incompatible | Publication blocked; no direct backlog file edit fallback. |
-| Contract changed during sync | Abort before writes where possible; report partial state if a write already occurred. |
-| Duplicate ID/body edited by another actor | Conflict, never clobber. |
-| Source path outside repo or symlink escape | Reject before reading or publishing. |
-| Project checks pass on obsolete commit | Mark stale; rerun against release candidate. |
-| Worker reports pass without evidence | Show unverified, not complete. |
+| Failure                                    | Required response                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| CTX unavailable or index stale             | Do not make up context; exact required files still available for manual work; context command exits blocked. |
+| Firstmate home absent or not registered    | Publication blocked; preview shows required setup.                                                           |
+| tasks-axi CLI/version/backend incompatible | Publication blocked; no direct backlog file edit fallback.                                                   |
+| Contract changed during sync               | Abort before writes where possible; report partial state if a write already occurred.                        |
+| Duplicate ID/body edited by another actor  | Conflict, never clobber.                                                                                     |
+| Source path outside repo or symlink escape | Reject before reading or publishing.                                                                         |
+| Project checks pass on obsolete commit     | Mark stale; rerun against release candidate.                                                                 |
+| Worker reports pass without evidence       | Show unverified, not complete.                                                                               |
 
 External repository files, CTX excerpts, and task bodies are untrusted as shell commands. The CLI never executes test commands solely because a contract specifies one; allowed project checks are defined by a reviewed, tracked verification configuration and executed only by an explicit operator/worker command. Do not store secrets or raw agent transcripts in a context pack or receipt.
