@@ -80,20 +80,57 @@ const broad = run(
   ["pack", authQuery, "--root", fixtureRoot, "--token-budget", "3500", "--json"],
   {
     cwd: fixtureRoot,
-    expected: [0, 3],
+    expected: [0],
     timeout: 120_000,
   },
 );
 const broadJson = parseJsonIfPresent(broad.stdout);
+if (broadJson === null || !Array.isArray(broadJson.items)) {
+  throw new Error("bad-path probe did not return a successful real-CTX pack");
+}
 const broadPaths = itemPaths(broadJson);
 const broadIrrelevant = broadPaths.filter(
   (path) => path.startsWith("docs/") && path !== "docs/AUTH.md",
 );
-if (broad.exitCode === 0 && broadIrrelevant.length === 0) {
-  throw new Error("bad-path probe neither blocked nor exposed unrelated topical retrieval");
+if (broadIrrelevant.length === 0) {
+  throw new Error("bad-path probe did not expose unrelated topical retrieval");
 }
+const broadIrrelevantEvidence = await Promise.all(
+  broadIrrelevant.map(async (path) => {
+    const item = broadJson.items.find(
+      (candidate) => candidate?.source?.provenance?.document_path === path,
+    );
+    const claimedSha256 = item?.source?.provenance?.document_sha256;
+    const actualSha256 = await fileHash(join(fixtureRoot, path));
+    if (claimedSha256 !== actualSha256) {
+      throw new Error(`bad-path provenance digest does not match exact original ${path}`);
+    }
+    return { path, document_sha256: actualSha256 };
+  }),
+);
 if (broadPaths.includes("docs/AUTH.md")) {
   throw new Error("bad-path probe unexpectedly retrieved deliberately unindexed docs/AUTH.md");
+}
+
+const partialDisconfirming = run(
+  "disconfirming-partial-ctx",
+  ctx,
+  [
+    "pack",
+    "Delete an owned record without disclosing another principal's record",
+    "--root",
+    fixtureRoot,
+    "--document",
+    "docs/DELETION.md",
+    "--token-budget",
+    "1300",
+    "--json",
+  ],
+  { cwd: fixtureRoot, expected: [0], timeout: 120_000 },
+);
+const partialDisconfirmingJson = parseJsonIfPresent(partialDisconfirming.stdout);
+if (partialDisconfirmingJson?.completeness_status !== "PARTIAL") {
+  throw new Error("disconfirming real-CTX probe did not retain its asserted PARTIAL result");
 }
 
 const initialAuth = factoryContext("auth-initial-missing", "AUTH-001", 0);
@@ -273,6 +310,7 @@ const manifest = {
       output_sha256: broad.outputSha256,
       provenance: broadPaths,
       irrelevant_topical_sources: broadIrrelevant,
+      irrelevant_topical_originals: broadIrrelevantEvidence,
       missing_target: true,
     },
     one_condition_counterfactual: {
@@ -290,7 +328,14 @@ const manifest = {
         "cross-account read/update/delete is non-mutating non-disclosing 404",
       ],
     },
-    disconfirming_case: {
+    disconfirming_partial_case: {
+      condition: "a successful document-scoped real-CTX call can remain PARTIAL",
+      exit_code: partialDisconfirming.exitCode,
+      completeness_status: partialDisconfirmingJson.completeness_status,
+      output_path: partialDisconfirming.outputPath,
+      output_sha256: partialDisconfirming.outputSha256,
+    },
+    disconfirming_missing_original_case: {
       condition: "declared required original docs/ABSENT.md does not exist",
       exit_code: 3,
       error_code: disconfirming.error.code,
@@ -337,7 +382,8 @@ console.log(
     missing_targets: manifest.fixed_sample.missing_targets,
     bad_path_exit: broad.exitCode,
     bad_path_irrelevant_topical_sources: broadIrrelevant,
-    disconfirming_exit: 3,
+    disconfirming_partial_exit: partialDisconfirming.exitCode,
+    disconfirming_missing_original_exit: 3,
   }),
 );
 
