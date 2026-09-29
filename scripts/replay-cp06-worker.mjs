@@ -18,6 +18,7 @@ const contract = await readFile(contractPath, "utf8");
 const pack = await readFile(initialPackPath, "utf8");
 const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. If a decisive authoritative source is missing, report MISSING_SOURCE and use the read tool exactly once on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
 const promptPath = join(workerRoot, "prompt.txt");
+const eventStreamPath = join(workerRoot, "event-stream.jsonl");
 const outputPath = join(workerRoot, "output.txt");
 const stderrPath = join(workerRoot, "stderr.txt");
 await writeFile(promptPath, prompt);
@@ -31,6 +32,8 @@ const args = [
   model,
   "--thinking",
   "high",
+  "--mode",
+  "json",
   "--no-session",
   "--no-context-files",
   "--no-extensions",
@@ -39,7 +42,6 @@ const args = [
   "skills/factory",
   "--tools",
   "read",
-  "--print",
   prompt,
 ];
 const result = spawnSync("pi", args, {
@@ -48,13 +50,20 @@ const result = spawnSync("pi", args, {
   env: process.env,
   timeout: 600_000,
 });
-await writeFile(outputPath, result.stdout ?? "");
+await writeFile(eventStreamPath, result.stdout ?? "");
 await writeFile(stderrPath, result.stderr ?? "");
 if (result.error !== undefined || result.status !== 0) {
   process.stderr.write(result.stderr ?? "");
   throw new Error(`fresh Pi worker exited ${result.status}`);
 }
-const response = parseResponse(result.stdout ?? "");
+const events = parseEventStream(result.stdout ?? "");
+const responseText = finalAssistantText(events);
+await writeFile(outputPath, responseText);
+const response = parseResponse(responseText);
+const readAudit = auditReadEvents(events, originalPath);
+if (!readAudit.ok) {
+  throw new Error(`fresh worker violated the event-stream read oracle: ${readAudit.reason}`);
+}
 const requiredConstraints = [
   /authenticated principal/i,
   /request-supplied owner fields? (?:are )?ignored/i,
@@ -68,13 +77,10 @@ const constraintText = Array.isArray(response.corrected_constraints)
 if (
   response.status !== "MISSING_SOURCE" ||
   response.broad_scan !== false ||
-  !Array.isArray(response.reads) ||
-  response.reads.length !== 1 ||
-  resolve(response.reads[0]) !== resolve(originalPath) ||
   !requiredConstraints.every((constraint) => constraint.test(constraintText))
 ) {
   throw new Error(
-    `fresh worker response did not satisfy the targeted-read oracle: ${result.stdout}`,
+    `fresh worker response did not satisfy the targeted-read oracle: ${responseText}`,
   );
 }
 
@@ -91,6 +97,7 @@ const manifest = {
     model,
     no_session: true,
     no_context_files: true,
+    mode: "json",
     tools: ["read"],
   },
   bounded_handoff: {
@@ -102,8 +109,14 @@ const manifest = {
     prompt_path: relative(promptPath),
     prompt_sha256: await fileHash(promptPath),
   },
+  event_stream: {
+    path: relative(eventStreamPath),
+    sha256: await fileHash(eventStreamPath),
+    event_count: events.length,
+    read_audit: readAudit.summary,
+  },
   command:
-    "pi --no-session --no-context-files --no-extensions --no-skills --skill skills/factory --tools read --print <bounded-handoff>",
+    "pi --mode json --no-session --no-context-files --no-extensions --no-skills --skill skills/factory --tools read <bounded-handoff>",
   exit_code: result.status,
   output_path: relative(outputPath),
   output_sha256: await fileHash(outputPath),
@@ -112,7 +125,7 @@ const manifest = {
   response,
   result: "pass",
   limitation:
-    "Live model wording is nondeterministic; the script deterministically checks the one-read path and required corrected constraints.",
+    "Live model wording is nondeterministic; the script deterministically checks actual read tool-call events and required corrected constraints.",
 };
 const manifestPath = join(workerRoot, "evidence.json");
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -125,10 +138,102 @@ console.log(
     manifest_sha256: await fileHash(manifestPath),
     exit_code: result.status,
     status: response.status,
-    reads: response.reads,
+    reads: readAudit.summary.project_read_paths,
     broad_scan: response.broad_scan,
   }),
 );
+
+function parseEventStream(output) {
+  const events = [];
+  for (const [index, line] of output.split(/\r?\n/).entries()) {
+    if (line.trim().length === 0) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch (error) {
+      throw new Error(`Pi JSON event stream line ${index + 1} is not valid JSON: ${error.message}`);
+    }
+  }
+  return events;
+}
+
+function finalAssistantText(events) {
+  const agentEnd = events.findLast((event) => event.type === "agent_end");
+  const messages = Array.isArray(agentEnd?.messages)
+    ? agentEnd.messages
+    : events
+        .filter((event) => event.type === "message_end" && event.message?.role === "assistant")
+        .map((event) => event.message);
+  const assistant = messages.findLast((message) => message.role === "assistant");
+  if (assistant === undefined)
+    throw new Error("Pi JSON event stream did not include a final assistant message");
+  return messageText(assistant);
+}
+
+function messageText(message) {
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return message.content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("");
+}
+
+function auditReadEvents(events, expectedOriginalPath) {
+  const expectedOriginal = resolve(expectedOriginalPath);
+  const allowedSkill = resolve(root, "skills/factory/SKILL.md");
+  const readCalls = events
+    .filter((event) => event.type === "tool_execution_start" && event.toolName === "read")
+    .map((event) => ({
+      path: event.args?.path,
+      resolved_path: typeof event.args?.path === "string" ? resolve(root, event.args.path) : null,
+    }));
+  const otherToolCalls = events.filter(
+    (event) => event.type === "tool_execution_start" && event.toolName !== "read",
+  );
+  const invalidReadCalls = readCalls.filter(
+    (call) => call.resolved_path !== expectedOriginal && call.resolved_path !== allowedSkill,
+  );
+  const originalReadCalls = readCalls.filter((call) => call.resolved_path === expectedOriginal);
+  const skillReadCalls = readCalls.filter((call) => call.resolved_path === allowedSkill);
+  const summary = {
+    read_count: readCalls.length,
+    project_read_count: originalReadCalls.length,
+    project_read_paths: originalReadCalls.map((call) => call.resolved_path),
+    allowed_skill_read_count: skillReadCalls.length,
+    allowed_skill_read_paths: skillReadCalls.map((call) => call.resolved_path),
+    rejected_read_paths: invalidReadCalls.map((call) => call.path),
+    other_tool_calls: otherToolCalls.map((event) => event.toolName),
+  };
+  if (otherToolCalls.length > 0) {
+    return {
+      ok: false,
+      reason: `unexpected tool calls ${summary.other_tool_calls.join(", ")}`,
+      summary,
+    };
+  }
+  if (originalReadCalls.length !== 1) {
+    return {
+      ok: false,
+      reason: `expected exactly one AUTH original read, saw ${originalReadCalls.length}`,
+      summary,
+    };
+  }
+  if (skillReadCalls.length > 1) {
+    return {
+      ok: false,
+      reason: `expected at most one factory skill read, saw ${skillReadCalls.length}`,
+      summary,
+    };
+  }
+  if (invalidReadCalls.length > 0) {
+    return {
+      ok: false,
+      reason: `unexpected read paths ${summary.rejected_read_paths.join(", ")}`,
+      summary,
+    };
+  }
+  return { ok: true, summary };
+}
 
 function parseResponse(output) {
   const trimmed = output.trim();

@@ -20,6 +20,7 @@ steps.push(
     process.execPath,
     ["test/fixtures/workflow/history/malformed-json-probe.mjs"],
     1,
+    ["SyntaxError", "not valid JSON"],
   ),
 );
 steps.push(
@@ -83,15 +84,20 @@ console.log(
   }),
 );
 
-function run(id, command, args, expectedExit) {
+function run(id, command, args, expectedExit, expectedOutputFragments = []) {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8", env: process.env });
   const exitCode = result.status;
   const output = `command: ${quote([command, ...args])}\nexit: ${exitCode}\n--- stdout ---\n${result.stdout ?? ""}\n--- stderr ---\n${result.stderr ?? ""}`;
   const outputPath = join(rawRoot, `${id}.txt`);
   writeFileSync(outputPath, output);
-  if (result.error !== undefined || exitCode !== expectedExit) {
+  const missingFragments = expectedOutputFragments.filter((fragment) => !output.includes(fragment));
+  if (result.error !== undefined || exitCode !== expectedExit || missingFragments.length > 0) {
     process.stderr.write(output);
-    throw new Error(`${id} exited ${exitCode}; expected ${expectedExit}`);
+    const suffix =
+      missingFragments.length > 0
+        ? `; missing output fragments ${missingFragments.join(", ")}`
+        : "";
+    throw new Error(`${id} exited ${exitCode}; expected ${expectedExit}${suffix}`);
   }
   return {
     id,
@@ -100,6 +106,7 @@ function run(id, command, args, expectedExit) {
     exit_code: exitCode,
     output_path: relative(outputPath),
     output_sha256: sha256(output),
+    expected_output_fragments: expectedOutputFragments,
   };
 }
 
