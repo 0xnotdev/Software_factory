@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  mountLiveCredentialReadOnly,
+  proveDummyCredentialIsolation,
+} from "./cp06-credential-isolation.mjs";
 import { auditReadEvents, isExpectedOriginalReference } from "./cp06-worker-audit.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -78,37 +82,13 @@ const credentialSource = resolve(
     join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json"),
 );
 const credentialHashBefore = await fileHash(credentialSource);
-const mount = spawnSync("mount", ["--bind", credentialSource, credentialSource], {
-  cwd: root,
-  encoding: "utf8",
-});
-if (mount.status !== 0) {
-  throw new Error(`read-only credential isolation unavailable: ${mount.stderr ?? "mount failed"}`);
-}
-const remount = spawnSync("mount", ["-o", "remount,bind,ro", credentialSource], {
-  cwd: root,
-  encoding: "utf8",
-});
-if (remount.status !== 0) {
-  throw new Error(
-    `read-only credential isolation unavailable: ${remount.stderr ?? "remount failed"}`,
-  );
-}
+const dummyIsolationProof = await proveDummyCredentialIsolation({ root });
 const evaluationCredential = join(evaluationAgentDir, "auth.json");
-await symlink(credentialSource, evaluationCredential);
-for (const target of [credentialSource, evaluationCredential]) {
-  try {
-    await writeFile(target, "unauthorized mutation");
-    throw new Error(`read-only credential isolation permitted a write to ${target}`);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.startsWith("read-only credential isolation permitted")
-    ) {
-      throw error;
-    }
-  }
-}
+const liveCredentialMount = await mountLiveCredentialReadOnly({
+  root,
+  source: credentialSource,
+  target: evaluationCredential,
+});
 let result;
 let credentialHashAfter;
 try {
@@ -120,6 +100,7 @@ try {
   });
   credentialHashAfter = await fileHash(credentialSource);
 } finally {
+  liveCredentialMount.cleanup();
   await rm(evaluationHome, { recursive: true, force: true });
 }
 if (credentialHashAfter !== credentialHashBefore) {
@@ -194,7 +175,15 @@ const manifest = {
     disposable_home: true,
     disposable_pi_agent_dir: true,
     credential_mode:
-      "Linux user/mount namespace; source bind-remounted read-only; direct and symlink writes denied; no copy",
+      "Linux user/mount namespace; live source and isolated auth regular file bind-mounted read-only; no symlink; no copy",
+    dummy_destructive_probe: {
+      source_unchanged: dummyIsolationProof.source_unchanged,
+      atomic_replacement_denied: dummyIsolationProof.atomic_replacement_denied,
+    },
+    live_mount_checks: {
+      non_writing_read_only_mount_checks: true,
+      destructive_real_source_probe: false,
+    },
     credential_source_unchanged: credentialHashAfter === credentialHashBefore,
     raw_transcript_retained: false,
   },
@@ -211,7 +200,7 @@ const manifest = {
   response,
   result: "pass",
   limitation:
-    "Live model wording is nondeterministic; the script deterministically checks actual read tool-call events and required corrected constraints.",
+    "Live model wording is nondeterministic; credential mount isolation requires Linux unshare/mount support and fails safe before Pi is invoked when unsupported; the script deterministically checks actual read tool-call events and required corrected constraints.",
 };
 const manifestPath = join(workerRoot, "evidence.json");
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
