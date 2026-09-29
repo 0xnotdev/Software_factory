@@ -5,9 +5,35 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { auditReadEvents } from "./cp06-worker-audit.mjs";
+import { auditReadEvents, isExpectedOriginalReference } from "./cp06-worker-audit.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const root = resolve(dirname(scriptPath), "..");
+if (process.env.CP06_MOUNT_ISOLATION_CHILD !== "1") {
+  const isolated = spawnSync(
+    "unshare",
+    [
+      "--user",
+      "--map-root-user",
+      "--mount",
+      "--propagation",
+      "private",
+      "--",
+      process.execPath,
+      scriptPath,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, CP06_MOUNT_ISOLATION_CHILD: "1" },
+      timeout: 600_000,
+    },
+  );
+  process.stdout.write(isolated.stdout ?? "");
+  process.stderr.write(isolated.stderr ?? "");
+  if (isolated.error !== undefined) throw isolated.error;
+  process.exit(isolated.status ?? 1);
+}
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const workerRoot = join(outputRoot, "worker");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
@@ -21,7 +47,7 @@ const contract = await readFile(contractPath, "utf8");
 const pack = await readFile(initialPackPath, "utf8");
 const original = await readFile(originalPath);
 const decisiveConstraint = "request-supplied owner fields are ignored";
-const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
+const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
 
 const provider = process.env.CP06_PI_PROVIDER ?? "openai-codex";
 const model = process.env.CP06_PI_MODEL ?? "gpt-5.6-sol";
@@ -52,7 +78,37 @@ const credentialSource = resolve(
     join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json"),
 );
 const credentialHashBefore = await fileHash(credentialSource);
-await symlink(credentialSource, join(evaluationAgentDir, "auth.json"));
+const mount = spawnSync("mount", ["--bind", credentialSource, credentialSource], {
+  cwd: root,
+  encoding: "utf8",
+});
+if (mount.status !== 0) {
+  throw new Error(`read-only credential isolation unavailable: ${mount.stderr ?? "mount failed"}`);
+}
+const remount = spawnSync("mount", ["-o", "remount,bind,ro", credentialSource], {
+  cwd: root,
+  encoding: "utf8",
+});
+if (remount.status !== 0) {
+  throw new Error(
+    `read-only credential isolation unavailable: ${remount.stderr ?? "remount failed"}`,
+  );
+}
+const evaluationCredential = join(evaluationAgentDir, "auth.json");
+await symlink(credentialSource, evaluationCredential);
+for (const target of [credentialSource, evaluationCredential]) {
+  try {
+    await writeFile(target, "unauthorized mutation");
+    throw new Error(`read-only credential isolation permitted a write to ${target}`);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("read-only credential isolation permitted")
+    ) {
+      throw error;
+    }
+  }
+}
 let result;
 let credentialHashAfter;
 try {
@@ -94,7 +150,11 @@ const constraintText = Array.isArray(response.corrected_constraints)
   : "";
 if (
   response.status !== "MISSING_SOURCE" ||
-  response.missing_source !== "docs/AUTH.md" ||
+  !isExpectedOriginalReference(response.missing_source, {
+    root,
+    referenceRoot: fixtureRoot,
+    expectedOriginalPath: originalPath,
+  }) ||
   response.broad_scan !== false ||
   !requiredConstraints.every((constraint) => constraint.test(constraintText))
 ) {
@@ -133,7 +193,8 @@ const manifest = {
   isolation: {
     disposable_home: true,
     disposable_pi_agent_dir: true,
-    credential_mode: "symlink to caller-authorized source; integrity checked; removed after run",
+    credential_mode:
+      "Linux user/mount namespace; source bind-remounted read-only; direct and symlink writes denied; no copy",
     credential_source_unchanged: credentialHashAfter === credentialHashBefore,
     raw_transcript_retained: false,
   },

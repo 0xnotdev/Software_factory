@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
-import { auditReadEvents } from "../scripts/cp06-worker-audit.mjs";
+import { auditReadEvents, isExpectedOriginalReference } from "../scripts/cp06-worker-audit.mjs";
 
 const root = process.cwd();
 const originalPath = resolve(root, "test/fixtures/cp06-context/docs/AUTH.md");
@@ -104,6 +104,34 @@ test("worker read audit rejects another project read", () => {
     finalMessage,
   ];
   assert.equal(auditReadEvents(events, options).ok, false);
+});
+
+test("worker missing-source identity accepts only the canonical original path", () => {
+  const fixtureRoot = resolve(root, "test/fixtures/cp06-context");
+  assert.equal(
+    isExpectedOriginalReference("docs/AUTH.md", {
+      root,
+      referenceRoot: fixtureRoot,
+      expectedOriginalPath: originalPath,
+    }),
+    true,
+  );
+  assert.equal(
+    isExpectedOriginalReference("docs/OTHER.md", {
+      root,
+      referenceRoot: fixtureRoot,
+      expectedOriginalPath: originalPath,
+    }),
+    false,
+  );
+  assert.equal(
+    isExpectedOriginalReference("unrelated but nonempty", {
+      root,
+      referenceRoot: fixtureRoot,
+      expectedOriginalPath: originalPath,
+    }),
+    false,
+  );
 });
 
 test("worker read audit accepts one completed exact-original read before the response", () => {

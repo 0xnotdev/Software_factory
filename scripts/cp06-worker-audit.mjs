@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
+export function isExpectedOriginalReference(value, options) {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  const reference = value.trim();
+  const expectedPath = resolve(options.root, options.expectedOriginalPath);
+  const referenceRoot = options.referenceRoot ?? options.root;
+  return resolve(referenceRoot, reference) === expectedPath;
+}
+
 export function auditReadEvents(events, options) {
   const expectedPath = resolve(options.root, options.expectedOriginalPath);
   const expectedBytes = Buffer.isBuffer(options.expectedOriginal)
