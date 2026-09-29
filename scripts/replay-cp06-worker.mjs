@@ -1,27 +1,27 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { auditReadEvents } from "./cp06-worker-audit.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const workerRoot = join(outputRoot, "worker");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
-const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-initial-missing.pack.md");
-const contractPath = join(root, "test/fixtures/cp06-context/cases/AUTH-before.yaml");
+const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-worker-missing.pack.md");
+const contractPath = join(root, "test/fixtures/cp06-context/cases/AUTH-worker-before.yaml");
 const originalPath = join(fixtureRoot, "docs/AUTH.md");
+await rm(workerRoot, { recursive: true, force: true });
 await mkdir(workerRoot, { recursive: true });
 
 const contract = await readFile(contractPath, "utf8");
 const pack = await readFile(initialPackPath, "utf8");
-const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. If a decisive authoritative source is missing, report MISSING_SOURCE and use the read tool exactly once on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
-const promptPath = join(workerRoot, "prompt.txt");
-const eventStreamPath = join(workerRoot, "event-stream.jsonl");
-const outputPath = join(workerRoot, "output.txt");
-const stderrPath = join(workerRoot, "stderr.txt");
-await writeFile(promptPath, prompt);
+const original = await readFile(originalPath);
+const decisiveConstraint = "request-supplied owner fields are ignored";
+const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
 
 const provider = process.env.CP06_PI_PROVIDER ?? "openai-codex";
 const model = process.env.CP06_PI_MODEL ?? "gpt-5.6-sol";
@@ -44,38 +44,57 @@ const args = [
   "read",
   prompt,
 ];
-const result = spawnSync("pi", args, {
-  cwd: root,
-  encoding: "utf8",
-  env: process.env,
-  timeout: 600_000,
-});
-await writeFile(eventStreamPath, result.stdout ?? "");
-await writeFile(stderrPath, result.stderr ?? "");
+const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-worker-"));
+const evaluationAgentDir = join(evaluationHome, "pi-agent");
+await mkdir(evaluationAgentDir);
+const credentialSource = resolve(
+  process.env.CP06_PI_AUTH_FILE ??
+    join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json"),
+);
+const credentialHashBefore = await fileHash(credentialSource);
+await symlink(credentialSource, join(evaluationAgentDir, "auth.json"));
+let result;
+let credentialHashAfter;
+try {
+  result = spawnSync("pi", args, {
+    cwd: root,
+    encoding: "utf8",
+    env: isolatedPiEnvironment(evaluationHome, evaluationAgentDir),
+    timeout: 600_000,
+  });
+  credentialHashAfter = await fileHash(credentialSource);
+} finally {
+  await rm(evaluationHome, { recursive: true, force: true });
+}
+if (credentialHashAfter !== credentialHashBefore) {
+  throw new Error("fresh Pi worker modified the source credential file");
+}
 if (result.error !== undefined || result.status !== 0) {
   process.stderr.write(result.stderr ?? "");
   throw new Error(`fresh Pi worker exited ${result.status}`);
 }
 const events = parseEventStream(result.stdout ?? "");
 const responseText = finalAssistantText(events);
-await writeFile(outputPath, responseText);
 const response = parseResponse(responseText);
-const readAudit = auditReadEvents(events, originalPath);
+const readAudit = auditReadEvents(events, {
+  root,
+  expectedOriginalPath: originalPath,
+  expectedOriginal: original,
+  decisiveText: [decisiveConstraint],
+});
 if (!readAudit.ok) {
   throw new Error(`fresh worker violated the event-stream read oracle: ${readAudit.reason}`);
 }
 const requiredConstraints = [
-  /authenticated principal/i,
+  /ownership comes only from the authenticated principal/i,
   /request-supplied owner fields? (?:are )?ignored/i,
-  /credentials?.*401/i,
-  /cross-account.*404/i,
-  /(?:not mutate|no mutation|unchanged state)/i,
 ];
 const constraintText = Array.isArray(response.corrected_constraints)
   ? response.corrected_constraints.join(" ")
   : "";
 if (
   response.status !== "MISSING_SOURCE" ||
+  response.missing_source !== "docs/AUTH.md" ||
   response.broad_scan !== false ||
   !requiredConstraints.every((constraint) => constraint.test(constraintText))
 ) {
@@ -105,23 +124,29 @@ const manifest = {
     contract_sha256: await fileHash(contractPath),
     pack_path: relative(initialPackPath),
     pack_sha256: await fileHash(initialPackPath),
+    original_path: relative(originalPath),
+    original_sha256: await fileHash(originalPath),
+    deliberately_omitted_constraint_sha256: sha256(decisiveConstraint),
     evidence: "in-memory auth 401 and concealed non-mutating cross-account 404 observations",
-    prompt_path: relative(promptPath),
-    prompt_sha256: await fileHash(promptPath),
+    prompt_sha256: sha256(prompt),
+  },
+  isolation: {
+    disposable_home: true,
+    disposable_pi_agent_dir: true,
+    credential_mode: "symlink to caller-authorized source; integrity checked; removed after run",
+    credential_source_unchanged: credentialHashAfter === credentialHashBefore,
+    raw_transcript_retained: false,
   },
   event_stream: {
-    path: relative(eventStreamPath),
-    sha256: await fileHash(eventStreamPath),
+    sha256: sha256(result.stdout ?? ""),
     event_count: events.length,
     read_audit: readAudit.summary,
   },
   command:
     "pi --mode json --no-session --no-context-files --no-extensions --no-skills --skill skills/factory --tools read <bounded-handoff>",
   exit_code: result.status,
-  output_path: relative(outputPath),
-  output_sha256: await fileHash(outputPath),
-  stderr_path: relative(stderrPath),
-  stderr_sha256: await fileHash(stderrPath),
+  output_sha256: sha256(responseText),
+  stderr_sha256: sha256(result.stderr ?? ""),
   response,
   result: "pass",
   limitation:
@@ -178,63 +203,6 @@ function messageText(message) {
     .join("");
 }
 
-function auditReadEvents(events, expectedOriginalPath) {
-  const expectedOriginal = resolve(expectedOriginalPath);
-  const allowedSkill = resolve(root, "skills/factory/SKILL.md");
-  const readCalls = events
-    .filter((event) => event.type === "tool_execution_start" && event.toolName === "read")
-    .map((event) => ({
-      path: event.args?.path,
-      resolved_path: typeof event.args?.path === "string" ? resolve(root, event.args.path) : null,
-    }));
-  const otherToolCalls = events.filter(
-    (event) => event.type === "tool_execution_start" && event.toolName !== "read",
-  );
-  const invalidReadCalls = readCalls.filter(
-    (call) => call.resolved_path !== expectedOriginal && call.resolved_path !== allowedSkill,
-  );
-  const originalReadCalls = readCalls.filter((call) => call.resolved_path === expectedOriginal);
-  const skillReadCalls = readCalls.filter((call) => call.resolved_path === allowedSkill);
-  const summary = {
-    read_count: readCalls.length,
-    project_read_count: originalReadCalls.length,
-    project_read_paths: originalReadCalls.map((call) => call.resolved_path),
-    allowed_skill_read_count: skillReadCalls.length,
-    allowed_skill_read_paths: skillReadCalls.map((call) => call.resolved_path),
-    rejected_read_paths: invalidReadCalls.map((call) => call.path),
-    other_tool_calls: otherToolCalls.map((event) => event.toolName),
-  };
-  if (otherToolCalls.length > 0) {
-    return {
-      ok: false,
-      reason: `unexpected tool calls ${summary.other_tool_calls.join(", ")}`,
-      summary,
-    };
-  }
-  if (originalReadCalls.length !== 1) {
-    return {
-      ok: false,
-      reason: `expected exactly one AUTH original read, saw ${originalReadCalls.length}`,
-      summary,
-    };
-  }
-  if (skillReadCalls.length > 1) {
-    return {
-      ok: false,
-      reason: `expected at most one factory skill read, saw ${skillReadCalls.length}`,
-      summary,
-    };
-  }
-  if (invalidReadCalls.length > 0) {
-    return {
-      ok: false,
-      reason: `unexpected read paths ${summary.rejected_read_paths.join(", ")}`,
-      summary,
-    };
-  }
-  return { ok: true, summary };
-}
-
 function parseResponse(output) {
   const trimmed = output.trim();
   try {
@@ -257,7 +225,32 @@ function relative(path) {
 }
 
 async function fileHash(path) {
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
+  return sha256(await readFile(path));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function isolatedPiEnvironment(home, agentDir) {
+  const environment = {
+    HOME: home,
+    PI_CODING_AGENT_DIR: agentDir,
+    PI_SKIP_VERSION_CHECK: "1",
+    PI_TELEMETRY: "0",
+  };
+  for (const name of [
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+  ]) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  }
+  return environment;
 }

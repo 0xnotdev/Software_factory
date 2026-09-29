@@ -24,9 +24,10 @@ export function createAuthIsolationFixture(): {
   }): AuthResponse;
   snapshot(): ReadonlyArray<Readonly<Item>>;
 } {
+  const itemKey = (owner: Item["owner"], id: string): string => `${owner}\u0000${id}`;
   const items = new Map<string, Item>([
-    ["item-a", { id: "item-a", owner: "account-a", title: "Private A" }],
-    ["item-b", { id: "item-b", owner: "account-b", title: "Private B" }],
+    [itemKey("account-a", "item-a"), { id: "item-a", owner: "account-a", title: "Private A" }],
+    [itemKey("account-b", "item-b"), { id: "item-b", owner: "account-b", title: "Private B" }],
   ]);
 
   return {
@@ -35,21 +36,22 @@ export function createAuthIsolationFixture(): {
       if (principal === undefined) {
         return { status: 401, body: { error: "unauthorized" } };
       }
-      const item = items.get(input.itemId);
+      const key = itemKey(principal, input.itemId);
+      const item = items.get(key);
       if (input.method === "POST") {
-        if (item !== undefined) return { status: 409, body: { error: "already_exists" } };
         if (typeof input.title !== "string" || input.title.trim().length === 0) {
           return { status: 400, body: { error: "invalid_title" } };
         }
+        if (item !== undefined) return { status: 409, body: { error: "already_exists" } };
         const created: Item = {
           id: input.itemId,
           owner: principal,
           title: input.title.trim(),
         };
-        items.set(created.id, created);
+        items.set(key, created);
         return { status: 201, body: { id: created.id, title: created.title } };
       }
-      if (item === undefined || item.owner !== principal) {
+      if (item === undefined) {
         // Deliberately conceal whether another account owns this identifier.
         return { status: 404, body: { error: "not_found" } };
       }
@@ -57,7 +59,7 @@ export function createAuthIsolationFixture(): {
         return { status: 200, body: { id: item.id, title: item.title } };
       }
       if (input.method === "DELETE") {
-        items.delete(item.id);
+        items.delete(key);
         return { status: 204, body: {} };
       }
       if (typeof input.title !== "string" || input.title.trim().length === 0) {

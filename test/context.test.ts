@@ -142,6 +142,25 @@ test("context limits CTX retrieval to the task-local source selection", async ()
   }
 });
 
+test("empty task-local selection constrains CTX to mandatory global authority", async () => {
+  const fixture = await seeded("empty-source-selection");
+  try {
+    await writeFile(
+      join(fixture.root, ".factory/tasks/CTX-001.yaml"),
+      taskContract.replace("required: [PROJECT.md, ARCHITECTURE.md]", "required: []"),
+    );
+
+    const result = await factory(fixture, { mode: "empty-source-selection" });
+    assert.equal(result.exit, 0, result.stderr || result.stdout);
+    const payload = parseObject(result.stdout);
+    const pack = await readFile(join(fixture.root, payload.pack_path), "utf8");
+    assert.doesNotMatch(pack, /The overlapping excerpt sentinel/);
+    assert.equal(payload.source_digests["docs/EXTRA.md"], undefined);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("context permits explicitly reported lexical fallback only when retrieval is sufficient", async () => {
   const fixture = await seeded("lexical");
   try {
@@ -601,12 +620,13 @@ if (command === "doctor") {
 if (command === "pack") {
   const selectedDocuments = args.flatMap((arg, index) => arg === "--document" ? [args[index + 1]] : []);
   const sourceFiltered = mode === "source-filter" && selectedDocuments.includes("docs/TARGET.md");
-  const relative = sourceFiltered ? "docs/TARGET.md" : "docs/EXTRA.md";
+  const globalsOnly = mode === "empty-source-selection" && selectedDocuments.length === 2 && selectedDocuments.includes("PROJECT.md") && selectedDocuments.includes("ARCHITECTURE.md");
+  const relative = sourceFiltered ? "docs/TARGET.md" : globalsOnly ? "PROJECT.md" : "docs/EXTRA.md";
   const full = fs.readFileSync(path.join(root, relative), "utf8");
   const firstEnd = sourceFiltered ? full.length : full.indexOf("Gamma context ends here.");
   const secondStart = sourceFiltered ? 0 : full.indexOf("The overlapping excerpt sentinel");
   const item = (start, end, text = full.slice(start, end)) => ({source:{source_type:"excerpt",text,provenance:{document_path:relative,document_sha256:hash(full),start_line:1,end_line:6,start_offset:start,end_offset:end,range_sha256:hash(text),index_generation:7}},estimated_tokens:Math.ceil(Buffer.byteLength(text)/3)});
-  const items = sourceFiltered ? [item(0, full.length)] : [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
+  const items = sourceFiltered || globalsOnly ? [item(0, full.length)] : [item(0, firstEnd), item(secondStart, full.length), item(0, firstEnd)];
   if (mode === "aliases") {
     items[1].source.provenance.document_path = "docs/EXTRA-ALIAS.md";
     const original = fs.readFileSync(path.join(root, "docs/PROJECT-ALIAS.md"), "utf8");

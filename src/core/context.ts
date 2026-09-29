@@ -139,6 +139,10 @@ export async function generateContextPack(options: {
   }
 
   const lexical = statusMode === "LEXICAL_ONLY";
+  const retrievalDocuments =
+    input.task.context.required.length > 0
+      ? input.task.context.required
+      : input.project.documents.required;
   const packArgs = [
     "pack",
     contextQuery(input.task),
@@ -146,7 +150,7 @@ export async function generateContextPack(options: {
     options.root,
     "--token-budget",
     String(remaining),
-    ...input.task.context.required.flatMap((path) => ["--document", path]),
+    ...retrievalDocuments.flatMap((path) => ["--document", path]),
     ...(lexical ? ["--no-embeddings"] : []),
     "--json",
   ];

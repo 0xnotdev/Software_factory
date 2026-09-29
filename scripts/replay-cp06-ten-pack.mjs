@@ -24,6 +24,7 @@ await mkdir(join(fixtureRoot, ".factory/state"), { recursive: true });
 const oracle = JSON.parse(await readFile(join(fixtureRoot, "oracle.json"), "utf8"));
 const fixedAuth = await readFile(join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"), "utf8");
 const beforeAuth = await readFile(join(fixtureRoot, "cases/AUTH-before.yaml"), "utf8");
+const workerBeforeAuth = await readFile(join(fixtureRoot, "cases/AUTH-worker-before.yaml"), "utf8");
 await writeFile(join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"), beforeAuth);
 
 run("git-init", "git", ["init", "-q", fixtureRoot], { cwd: root });
@@ -140,6 +141,18 @@ await copyArtifact(initialAuth.receipt_path, "auth-initial-missing.receipt.json"
 if (initialAuthPack.includes("docs/AUTH.md")) {
   throw new Error("initial AUTH handoff unexpectedly contains the missing decisive original");
 }
+await writeFile(join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"), workerBeforeAuth);
+const workerInitialAuth = factoryContext("auth-worker-missing", "AUTH-001", 0);
+const workerInitialPack = await readFile(join(fixtureRoot, workerInitialAuth.pack_path), "utf8");
+await copyArtifact(workerInitialAuth.pack_path, "auth-worker-missing.pack.md");
+await copyArtifact(workerInitialAuth.receipt_path, "auth-worker-missing.receipt.json");
+if (
+  workerInitialPack.includes("docs/AUTH.md") ||
+  workerInitialPack.includes("request-supplied ownership")
+) {
+  throw new Error("fresh-worker handoff did not omit the decisive creation ownership rule");
+}
+await writeFile(join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"), beforeAuth);
 
 run(
   "ctx-add-auth",
@@ -183,6 +196,93 @@ const doctor = jsonRun(
 if (doctor.offline_ready !== true || doctor.network_attempted !== false) {
   throw new Error("CTX offline doctor did not prove offline readiness");
 }
+
+const globalOnlyTaskPath = join(fixtureRoot, ".factory/tasks/GLOBAL-ONLY.yaml");
+const globalOnlyQuery = [
+  "Keep credentials and raw worker transcripts out of offline context",
+  "A worker applies the mandatory rule that credentials and raw worker transcripts never enter a context pack and normal operation is offline.",
+  "A-GLOBAL: The pack contains the mandatory credentials, raw transcript, and offline constraints without topical documents.",
+  "credentials raw worker transcripts context pack normal operation offline",
+].join("\n");
+await writeFile(
+  globalOnlyTaskPath,
+  `schema_version: 1
+id: GLOBAL-ONLY
+title: Keep credentials and raw worker transcripts out of offline context
+outcome: A worker applies the mandatory rule that credentials and raw worker transcripts never enter a context pack and normal operation is offline.
+depends_on: []
+complexity: bounded
+risk: bounded
+acceptance:
+  - id: A-GLOBAL
+    statement: The pack contains the mandatory credentials, raw transcript, and offline constraints without topical documents.
+advances: [C-COPY]
+context:
+  topics: [credentials, raw worker transcripts, context pack, normal operation, offline]
+  required: []
+evidence:
+  required: [integration]
+delivery: project-default
+`,
+);
+const emptySelectionFactory = factoryContext("empty-selection-factory", "GLOBAL-ONLY", 0);
+const emptySelectionPack = await readFile(
+  join(fixtureRoot, emptySelectionFactory.pack_path),
+  "utf8",
+);
+const emptySelectionTopicalDigests = Object.keys(emptySelectionFactory.source_digests).filter(
+  (path) => path.startsWith("docs/"),
+);
+if (
+  emptySelectionTopicalDigests.length > 0 ||
+  /^## Retrieved context: docs\//m.test(emptySelectionPack)
+) {
+  throw new Error("empty task-local selection widened Factory output to topical authority");
+}
+const emptySelectionCtx = run(
+  "empty-selection-real-ctx",
+  ctx,
+  [
+    "pack",
+    globalOnlyQuery,
+    "--root",
+    fixtureRoot,
+    "--document",
+    "PROJECT.md",
+    "--document",
+    "ARCHITECTURE.md",
+    "--token-budget",
+    "3500",
+    "--json",
+  ],
+  { cwd: fixtureRoot, expected: [0], timeout: 120_000 },
+);
+const emptySelectionCtxJson = parseJsonIfPresent(emptySelectionCtx.stdout);
+if (emptySelectionCtxJson?.completeness_status !== "COMPLETE") {
+  throw new Error("empty-selection real-CTX probe was not COMPLETE");
+}
+const emptySelectionProvenance = itemPaths(emptySelectionCtxJson);
+if (
+  emptySelectionProvenance.length === 0 ||
+  emptySelectionProvenance.some((path) => !globalSources.includes(path))
+) {
+  throw new Error(
+    `empty-selection real-CTX provenance escaped mandatory globals: ${emptySelectionProvenance.join(",")}`,
+  );
+}
+const emptySelectionOriginals = await Promise.all(
+  emptySelectionProvenance.map(async (path) => {
+    const item = emptySelectionCtxJson.items.find(
+      (candidate) => candidate?.source?.provenance?.document_path === path,
+    );
+    const actualSha256 = await fileHash(join(fixtureRoot, path));
+    if (item?.source?.provenance?.document_sha256 !== actualSha256) {
+      throw new Error(`empty-selection provenance digest does not match ${path}`);
+    }
+    return { path, document_sha256: actualSha256 };
+  }),
+);
+await rm(globalOnlyTaskPath);
 
 const counterfactualBefore = factoryContext("counterfactual-before", "AUTH-001", 0);
 const counterfactualBeforePack = await readFile(
@@ -269,6 +369,7 @@ const sourceFiles = [
   "ARCHITECTURE.md",
   "oracle.json",
   "cases/AUTH-before.yaml",
+  "cases/AUTH-worker-before.yaml",
   ...oracle.tasks.map((entry) => `.factory/tasks/${entry.id}.yaml`),
   ...topicalSources,
 ];
@@ -312,6 +413,18 @@ const manifest = {
       irrelevant_topical_sources: broadIrrelevant,
       irrelevant_topical_originals: broadIrrelevantEvidence,
       missing_target: true,
+    },
+    empty_selection: {
+      semantics: "empty task-local authority falls back to mandatory global document filters",
+      factory_exit_code: 0,
+      factory_output_path: commandById("empty-selection-factory").outputPath,
+      factory_output_sha256: commandById("empty-selection-factory").outputSha256,
+      factory_topical_source_digests: emptySelectionTopicalDigests,
+      ctx_exit_code: emptySelectionCtx.exitCode,
+      ctx_output_path: emptySelectionCtx.outputPath,
+      ctx_output_sha256: emptySelectionCtx.outputSha256,
+      ctx_completeness_status: emptySelectionCtxJson.completeness_status,
+      ctx_provenance: emptySelectionOriginals,
     },
     one_condition_counterfactual: {
       unchanged_fields: "all AUTH task fields except context.required",

@@ -1,0 +1,17 @@
+schema_version: 1
+id: AUTH-001
+title: Conceal cross-account item operations
+outcome: Existing-item operations across accounts remain concealed and non-mutating.
+depends_on: []
+complexity: bounded
+risk: critical
+acceptance:
+  - id: A-AUTH
+    statement: Missing or forged credentials return 401 and cross-account read update and delete return non-mutating 404.
+advances: [C-AUTH]
+context:
+  topics: [tenancy, forged credentials]
+  required: [PROJECT.md, ARCHITECTURE.md]
+evidence:
+  required: [integration]
+delivery: project-default

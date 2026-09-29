@@ -4,4 +4,4 @@ The fixture uses an in-memory boundary around API, persistence, and presentation
 
 ## Trust boundary
 
-Authenticated identity is authoritative for ownership. Cross-account operations neither disclose existence nor mutate state.
+Authenticated identity is authoritative for ownership. Item identifiers are scoped to that identity, so create-time collisions cannot disclose another account's identifiers. Cross-account operations neither disclose existence nor mutate state.

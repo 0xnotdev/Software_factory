@@ -100,6 +100,50 @@ test("critical auth fixture conceals and preserves another account's item", () =
   assert.deepEqual(api.snapshot(), before);
 });
 
+test("critical auth fixture prevents cross-tenant identifier collision probes", () => {
+  const api = createAuthIsolationFixture();
+  const accountABefore = api
+    .snapshot()
+    .find((item) => item.owner === "account-a" && item.id === "item-a");
+
+  assert.deepEqual(
+    api.request({
+      token: "fixture-token-b",
+      method: "POST",
+      itemId: "item-a",
+      title: "Private B with tenant-local id",
+    }),
+    { status: 201, body: { id: "item-a", title: "Private B with tenant-local id" } },
+  );
+  assert.deepEqual(api.request({ token: "fixture-token-a", method: "GET", itemId: "item-a" }), {
+    status: 200,
+    body: { id: "item-a", title: "Private A" },
+  });
+  assert.deepEqual(api.request({ token: "fixture-token-b", method: "GET", itemId: "item-a" }), {
+    status: 200,
+    body: { id: "item-a", title: "Private B with tenant-local id" },
+  });
+  assert.deepEqual(
+    api.snapshot().find((item) => item.owner === "account-a" && item.id === "item-a"),
+    accountABefore,
+  );
+});
+
+test("critical auth fixture validates title before tenant-local collision state", () => {
+  const api = createAuthIsolationFixture();
+  const before = api.snapshot();
+
+  assert.deepEqual(
+    api.request({ token: "fixture-token-b", method: "POST", itemId: "item-a", title: "" }),
+    { status: 400, body: { error: "invalid_title" } },
+  );
+  assert.deepEqual(
+    api.request({ token: "fixture-token-b", method: "POST", itemId: "unused", title: "" }),
+    { status: 400, body: { error: "invalid_title" } },
+  );
+  assert.deepEqual(api.snapshot(), before);
+});
+
 test("critical auth fixture derives new item ownership from the principal", () => {
   const api = createAuthIsolationFixture();
   assert.equal(
