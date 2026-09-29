@@ -89,7 +89,7 @@
 
 - [x] Create tests/fixtures for critical auth isolation and normal API behavior, plus one simulated reviewer finding that causes repair and retest.
 - [x] Run an actual worker task with only task/pack/evidence sources in a fresh context; inspect whether it needs missing docs.
-- [x] **Gate:** P-06, P-07, and no change to Firstmate routing or shipping config by Factory.
+- [x] **Gate:** P-06 and P-07 via the tracked ten-pack/P-07 replay in `docs/probes/CP-06.md`; no change to Firstmate routing or shipping config by Factory.
 
 ## CP-07 — Thin Pi command and status convenience
 

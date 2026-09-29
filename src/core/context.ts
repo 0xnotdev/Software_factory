@@ -146,6 +146,7 @@ export async function generateContextPack(options: {
     options.root,
     "--token-budget",
     String(remaining),
+    ...input.task.context.required.flatMap((path) => ["--document", path]),
     ...(lexical ? ["--no-embeddings"] : []),
     "--json",
   ];

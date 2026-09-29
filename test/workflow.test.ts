@@ -1,7 +1,12 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createAuthIsolationFixture } from "./fixtures/workflow/critical-auth-isolation.js";
 import { handleProfileRequest } from "./fixtures/workflow/normal-api.js";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("normal API fixture preserves successful profile behavior", () => {
   assert.deepEqual(handleProfileRequest({ method: "GET", path: "/v1/profile" }), {
@@ -33,6 +38,20 @@ test("normal API fixture rejects malformed, invalid, unknown, and unsupported re
   );
   assert.equal(handleProfileRequest({ method: "GET", path: "/v1/missing" }).status, 404);
   assert.equal(handleProfileRequest({ method: "POST", path: "/v1/profile" }).status, 405);
+});
+
+test("retained P-07 finding fails before repair and passes through the final API", () => {
+  const before = spawnSync(
+    process.execPath,
+    ["test/fixtures/workflow/history/malformed-json-probe.mjs"],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(before.status, 1, before.stdout + before.stderr);
+  assert.match(before.stdout + before.stderr, /SyntaxError/);
+  assert.deepEqual(handleProfileRequest({ method: "PUT", path: "/v1/profile", body: "not-json" }), {
+    status: 400,
+    body: { error: "invalid_json" },
+  });
 });
 
 test("critical auth fixture allows each account to observe its own item", () => {

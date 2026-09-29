@@ -37,9 +37,9 @@ For each ready task, run:
 <factory-cli> context <TASK-ID> --root <project-root> --json
 ```
 
-Inspect the pack and receipt for the exact task contract, required original sources, source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
+Before generation, make `context.required` the reviewed task-local source selection: include every known original that can decide an acceptance or risk condition, but no unrelated documents as insurance. Factory reads those originals exactly and constrains CTX retrieval to the same document paths. Inspect the pack and receipt for the exact task contract, required originals, source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
 
-Give a fresh worker only the task-local brief, exact contract, bounded pack, and existing evidence—not a previous agent transcript. If a decisive source is absent, have the worker name it and make a targeted exact-original read, verify provenance, and record the corrected assumption. Do not widen every pack or omit a critical constraint to make retrieval appear complete.
+Give a fresh worker only the task-local brief, exact contract, bounded pack, and existing evidence—not a previous agent transcript. If a decisive source is absent, have the worker name it and make one targeted exact-original read, verify provenance, record the corrected assumption, and add that exact path to `context.required` before regeneration when it is durable authority. Do not widen every pack, hide raw retrieved excerpts, or omit a critical constraint to make retrieval appear complete.
 
 ## Risk and task review
 

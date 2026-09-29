@@ -13,6 +13,9 @@
     "format": "prettier --write \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "format:check": "prettier --check \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "lint": "node scripts/lint.mjs",
+    "proof:cp06:ten-pack": "npm run build && node scripts/replay-cp06-ten-pack.mjs",
+    "proof:cp06:p07": "node scripts/replay-cp06-p07.mjs",
+    "proof:cp06:worker": "node scripts/replay-cp06-worker.mjs",
     "factory": "node dist/src/cli.js"
   },
   "engines": {
