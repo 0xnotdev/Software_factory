@@ -75,11 +75,11 @@ export function auditReadEvents(events, options) {
   if (typeof callId !== "string" || callId.length === 0) {
     return reject("original read start omitted toolCallId");
   }
-  if (start.event.args?.offset !== undefined && start.event.args.offset !== 1) {
-    return reject("original read started outside the first line");
+  if (start.event.args?.offset !== undefined) {
+    return reject("original read used an explicit offset");
   }
   if (start.event.args?.limit !== undefined) {
-    return reject("original read used a partial line limit");
+    return reject("original read used an explicit limit");
   }
 
   const matchingEnds = readEnds.filter(({ event }) => event.toolCallId === callId);

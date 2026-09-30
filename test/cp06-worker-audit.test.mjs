@@ -56,6 +56,18 @@ for (const [name, events] of [
     ],
   ],
   [
+    "explicit first-line offset with complete bytes",
+    [{ ...start, args: { path: originalPath, offset: 1 } }, successfulEnd(), finalMessage],
+  ],
+  [
+    "explicit limit with complete bytes",
+    [
+      { ...start, args: { path: originalPath, limit: Number.MAX_SAFE_INTEGER } },
+      successfulEnd(),
+      finalMessage,
+    ],
+  ],
+  [
     "wrong starting range",
     [
       { ...start, args: { path: originalPath, offset: 2 } },
