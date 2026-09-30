@@ -78,6 +78,21 @@ for (const [name, events] of [
   ],
   ["completion before start", [successfulEnd(), start, finalMessage]],
   ["response before completion", [start, finalMessage, successfulEnd()]],
+  [
+    "orphan non-read completion",
+    [
+      start,
+      successfulEnd(),
+      {
+        type: "tool_execution_end",
+        toolName: "bash",
+        toolCallId: "orphan-bash",
+        isError: false,
+        result: { content: [{ type: "text", text: "unexpected" }] },
+      },
+      finalMessage,
+    ],
+  ],
 ]) {
   test(`worker read audit rejects ${name}`, () => {
     assert.equal(auditReadEvents(events, options).ok, false);

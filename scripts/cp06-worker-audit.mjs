@@ -25,6 +25,7 @@ export function auditReadEvents(events, options) {
   const readStarts = starts.filter(({ event }) => event.toolName === "read");
   const readEnds = ends.filter(({ event }) => event.toolName === "read");
   const otherToolCalls = starts.filter(({ event }) => event.toolName !== "read");
+  const otherToolCompletions = ends.filter(({ event }) => event.toolName !== "read");
   const resolvedReads = readStarts.map(({ event, index }) => ({
     event,
     index,
@@ -40,6 +41,7 @@ export function auditReadEvents(events, options) {
     project_read_paths: originalReads.map((entry) => entry.resolvedPath),
     rejected_read_paths: rejectedReads.map((entry) => entry.path),
     other_tool_calls: otherToolCalls.map(({ event }) => event.toolName),
+    other_tool_completions: otherToolCompletions.map(({ event }) => event.toolName),
     completed_successfully: false,
     exact_original: false,
     expected_sha256: sha256(expectedBytes),
@@ -52,8 +54,13 @@ export function auditReadEvents(events, options) {
   };
   const reject = (reason) => ({ ok: false, reason, summary });
 
-  if (otherToolCalls.length > 0) {
-    return reject(`unexpected tool calls ${summary.other_tool_calls.join(", ")}`);
+  if (otherToolCalls.length > 0 || otherToolCompletions.length > 0) {
+    return reject(
+      `unexpected tool events ${[
+        ...summary.other_tool_calls,
+        ...summary.other_tool_completions,
+      ].join(", ")}`,
+    );
   }
   if (readStarts.length !== 1 || originalReads.length !== 1 || rejectedReads.length > 0) {
     return reject(

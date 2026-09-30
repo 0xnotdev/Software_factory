@@ -6,142 +6,94 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  mountLiveCredentialReadOnly,
-  proveDummyCredentialIsolation,
-} from "./cp06-credential-isolation.mjs";
-import { auditReadEvents, isExpectedOriginalReference } from "./cp06-worker-audit.mjs";
+  Cp06IsolationUnsupportedError,
+  runCp06SecurityPreflight,
+  runIsolatedWorker,
+} from "./cp06-auth-security.mjs";
 
-const scriptPath = fileURLToPath(import.meta.url);
-const root = resolve(dirname(scriptPath), "..");
-if (process.env.CP06_MOUNT_ISOLATION_CHILD !== "1") {
-  const isolated = spawnSync(
-    "unshare",
-    [
-      "--user",
-      "--map-root-user",
-      "--mount",
-      "--propagation",
-      "private",
-      "--",
-      process.execPath,
-      scriptPath,
-    ],
-    {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, CP06_MOUNT_ISOLATION_CHILD: "1" },
-      timeout: 600_000,
-    },
-  );
-  process.stdout.write(isolated.stdout ?? "");
-  process.stderr.write(isolated.stderr ?? "");
-  if (isolated.error !== undefined) throw isolated.error;
-  process.exit(isolated.status ?? 1);
-}
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const workerRoot = join(outputRoot, "worker");
+const securityRoot = join(outputRoot, "auth-security");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
 const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-worker-missing.pack.md");
 const contractPath = join(root, "test/fixtures/cp06-context/cases/AUTH-worker-before.yaml");
 const originalPath = join(fixtureRoot, "docs/AUTH.md");
+const provider = "openai-codex";
+const model = process.env.CP06_PI_MODEL ?? "gpt-5.6-sol";
+const timeoutMs = 600_000;
+const systemPrompt =
+  "You are a bounded CP-06 reviewer. Use exactly the read tool, read only the supplied exact original once, return only the requested JSON, and do not attempt any file mutation or broad scan.";
+
 await rm(workerRoot, { recursive: true, force: true });
 await mkdir(workerRoot, { recursive: true });
+let security;
+try {
+  // This DUMMY-only gate includes the unsafe control, hardened evaluated-child
+  // attacks, vendor refresh counters, and offline SDK read audit. It completes
+  // before the real credential path is opened or any provider request is made.
+  security = await runCp06SecurityPreflight({
+    root,
+    outputRoot: securityRoot,
+    reviewer: process.env.CP06_REVIEWER,
+  });
+} catch (error) {
+  await recordBlocked(error, "dummy-security-preflight");
+  if (error instanceof Cp06IsolationUnsupportedError) process.exit(73);
+  throw error;
+}
 
-const contract = await readFile(contractPath, "utf8");
-const pack = await readFile(initialPackPath, "utf8");
-const original = await readFile(originalPath);
-const decisiveConstraint = "request-supplied owner fields are ignored";
-const prompt = `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
-
-const provider = process.env.CP06_PI_PROVIDER ?? "openai-codex";
-const model = process.env.CP06_PI_MODEL ?? "gpt-5.6-sol";
-const args = [
-  "--provider",
+const workerInput = {
+  schema_version: 1,
+  root,
+  fixture_root: fixtureRoot,
+  contract_path: contractPath,
+  pack_path: initialPackPath,
+  original_path: originalPath,
   provider,
-  "--model",
   model,
-  "--thinking",
-  "high",
-  "--mode",
-  "json",
-  "--no-session",
-  "--no-context-files",
-  "--no-extensions",
-  "--no-skills",
-  "--skill",
-  "skills/factory",
-  "--tools",
-  "read",
-  prompt,
-];
-const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-worker-"));
-const evaluationAgentDir = join(evaluationHome, "pi-agent");
-await mkdir(evaluationAgentDir);
+  timeout_ms: timeoutMs,
+  system_prompt: systemPrompt,
+};
+const inputPath = join(workerRoot, "input.json");
+await writeFile(inputPath, `${JSON.stringify(workerInput, null, 2)}\n`);
+const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-sdk-worker-"));
+const credentialTarget = join(evaluationHome, "pi-agent", "auth.json");
 const credentialSource = resolve(
   process.env.CP06_PI_AUTH_FILE ??
     join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json"),
 );
-const credentialHashBefore = await fileHash(credentialSource);
-const dummyIsolationProof = await proveDummyCredentialIsolation({ root });
-const evaluationCredential = join(evaluationAgentDir, "auth.json");
-const liveCredentialMount = await mountLiveCredentialReadOnly({
-  root,
-  source: credentialSource,
-  target: evaluationCredential,
-});
-let result;
-let credentialHashAfter;
+const binaries = {
+  helper: join(securityRoot, "cp06-seccomp-exec"),
+  syscallProbe: join(securityRoot, "cp06-isolation-syscalls"),
+};
+let isolated;
 try {
-  result = spawnSync("pi", args, {
-    cwd: root,
-    encoding: "utf8",
-    env: isolatedPiEnvironment(evaluationHome, evaluationAgentDir),
-    timeout: 600_000,
+  isolated = await runIsolatedWorker({
+    root,
+    source: credentialSource,
+    target: credentialTarget,
+    binaries,
+    inputPath,
+    timeout: timeoutMs + 60_000,
   });
-  credentialHashAfter = await fileHash(credentialSource);
+} catch (error) {
+  await recordBlocked(error, "isolated-sdk-worker");
+  process.stderr.write(`${error.code ?? "CP06_WORKER_FAILED"}: ${error.message}\n`);
+  process.exit(error.exitCode ?? 1);
 } finally {
-  liveCredentialMount.cleanup();
   await rm(evaluationHome, { recursive: true, force: true });
 }
-if (credentialHashAfter !== credentialHashBefore) {
-  throw new Error("fresh Pi worker modified the source credential file");
-}
-if (result.error !== undefined || result.status !== 0) {
-  process.stderr.write(result.stderr ?? "");
-  throw new Error(`fresh Pi worker exited ${result.status}`);
-}
-const events = parseEventStream(result.stdout ?? "");
-const responseText = finalAssistantText(events);
-const response = parseResponse(responseText);
-const readAudit = auditReadEvents(events, {
-  root,
-  expectedOriginalPath: originalPath,
-  expectedOriginal: original,
-  decisiveText: [decisiveConstraint],
-});
-if (!readAudit.ok) {
-  throw new Error(`fresh worker violated the event-stream read oracle: ${readAudit.reason}`);
-}
-const requiredConstraints = [
-  /ownership comes only from the authenticated principal/i,
-  /request-supplied owner fields? (?:are )?ignored/i,
-];
-const constraintText = Array.isArray(response.corrected_constraints)
-  ? response.corrected_constraints.join(" ")
-  : "";
 if (
-  response.status !== "MISSING_SOURCE" ||
-  !isExpectedOriginalReference(response.missing_source, {
-    root,
-    referenceRoot: fixtureRoot,
-    expectedOriginalPath: originalPath,
-  }) ||
-  response.broad_scan !== false ||
-  !requiredConstraints.every((constraint) => constraint.test(constraintText))
+  isolated.mode !== "worker" ||
+  isolated.source_unchanged !== true ||
+  isolated.mount_ids_distinct !== true ||
+  isolated.cleanup !== "pass" ||
+  isolated.child?.result !== "pass"
 ) {
-  throw new Error(
-    `fresh worker response did not satisfy the targeted-read oracle: ${responseText}`,
-  );
+  const error = new Error("isolated SDK worker omitted a required safety assertion");
+  await recordBlocked(error, "isolated-sdk-worker-audit");
+  throw error;
 }
 
 const testedSha = textCommand("git", ["rev-parse", "HEAD"]);
@@ -150,15 +102,16 @@ const manifest = {
   gate: "P-06-fresh-worker",
   tested_sha: testedSha,
   recorded_at: new Date().toISOString(),
-  reviewer: process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker",
+  reviewer: process.env.CP06_REVIEWER ?? "Pi CP-06 read-only auth correction worker",
   worker: {
-    pi_version: textCommand("pi", ["--version"]),
+    pi_version: isolated.child.pi_version,
+    interface: "public SDK with injected CredentialStore",
     provider,
     model,
-    no_session: true,
-    no_context_files: true,
-    mode: "json",
-    tools: ["read"],
+    in_memory_session: isolated.child.session.in_memory,
+    tools: isolated.child.session.active_tools,
+    refresh_on_create: false,
+    model_catalog_network: false,
   },
   bounded_handoff: {
     contract_path: relative(contractPath),
@@ -167,40 +120,33 @@ const manifest = {
     pack_sha256: await fileHash(initialPackPath),
     original_path: relative(originalPath),
     original_sha256: await fileHash(originalPath),
-    deliberately_omitted_constraint_sha256: sha256(decisiveConstraint),
+    deliberately_omitted_constraint_sha256: sha256("request-supplied owner fields are ignored"),
     evidence: "in-memory auth 401 and concealed non-mutating cross-account 404 observations",
-    prompt_sha256: sha256(prompt),
   },
   isolation: {
-    disposable_home: true,
-    disposable_pi_agent_dir: true,
-    credential_mode:
-      "Linux user/mount namespace; live source and isolated auth regular file bind-mounted read-only; no symlink; no copy",
-    dummy_destructive_probe: {
-      source_unchanged: dummyIsolationProof.source_unchanged,
-      atomic_replacement_denied: dummyIsolationProof.atomic_replacement_denied,
-    },
-    live_mount_checks: {
-      non_writing_read_only_mount_checks: true,
-      destructive_real_source_probe: false,
-    },
-    credential_source_unchanged: credentialHashAfter === credentialHashBefore,
+    supported_platform: "Linux x86-64",
+    dummy_security_preflight: security,
+    source_and_target_distinct_read_only_mounts: isolated.mount_ids_distinct,
+    evaluated_child_capabilities: "all sets empty",
+    evaluated_child_no_new_privs: true,
+    evaluated_child_seccomp: true,
+    credential_store: "injected callback-denying read-only CredentialStore",
+    oauth_preflight: isolated.child.oauth_preflight,
+    credential_store_audit: isolated.child.credential_store,
+    credential_source_unchanged: isolated.source_unchanged,
+    cleanup: isolated.cleanup,
+    destructive_real_source_probe: false,
     raw_transcript_retained: false,
   },
-  event_stream: {
-    sha256: sha256(result.stdout ?? ""),
-    event_count: events.length,
-    read_audit: readAudit.summary,
-  },
+  event_stream: isolated.child.event_stream,
   command:
-    "pi --mode json --no-session --no-context-files --no-extensions --no-skills --skill skills/factory --tools read <bounded-handoff>",
-  exit_code: result.status,
-  output_sha256: sha256(responseText),
-  stderr_sha256: sha256(result.stderr ?? ""),
-  response,
+    "Pi 0.85.1 createAgentSession({modelRuntime: injectedReadOnlyRuntime, tools: ['read'], inMemorySession}) inside capability-free seccomp child",
+  exit_code: 0,
+  response_sha256: isolated.child.response_sha256,
+  response: isolated.child.response,
   result: "pass",
   limitation:
-    "Live model wording is nondeterministic; credential mount isolation requires Linux unshare/mount support and fails safe before Pi is invoked when unsupported; the script deterministically checks actual read tool-call events and required corrected constraints.",
+    "Live model wording is nondeterministic. The proof runner is Linux x86-64 only and exits blocked before credential access/provider use when user/mount namespaces, libseccomp, exact Pi 0.85.1, or adequate unexpired OAuth validity are unavailable.",
 };
 const manifestPath = join(workerRoot, "evidence.json");
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -211,62 +157,29 @@ console.log(
     tested_sha: testedSha,
     manifest_path: relative(manifestPath),
     manifest_sha256: await fileHash(manifestPath),
-    exit_code: result.status,
-    status: response.status,
-    reads: readAudit.summary.project_read_paths,
-    broad_scan: response.broad_scan,
+    exit_code: 0,
+    status: manifest.response.status,
+    reads: manifest.event_stream.read_audit.project_read_paths,
+    broad_scan: manifest.response.broad_scan,
   }),
 );
 
-function parseEventStream(output) {
-  const events = [];
-  for (const [index, line] of output.split(/\r?\n/).entries()) {
-    if (line.trim().length === 0) continue;
-    try {
-      events.push(JSON.parse(line));
-    } catch (error) {
-      throw new Error(`Pi JSON event stream line ${index + 1} is not valid JSON: ${error.message}`);
-    }
-  }
-  return events;
-}
-
-function finalAssistantText(events) {
-  const agentEnd = events.findLast((event) => event.type === "agent_end");
-  const messages = Array.isArray(agentEnd?.messages)
-    ? agentEnd.messages
-    : events
-        .filter((event) => event.type === "message_end" && event.message?.role === "assistant")
-        .map((event) => event.message);
-  const assistant = messages.findLast((message) => message.role === "assistant");
-  if (assistant === undefined)
-    throw new Error("Pi JSON event stream did not include a final assistant message");
-  return messageText(assistant);
-}
-
-function messageText(message) {
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return "";
-  return message.content
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
-    .join("");
-}
-
-function parseResponse(output) {
-  const trimmed = output.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced === null) throw new Error(`fresh worker did not return JSON: ${output}`);
-    return JSON.parse(fenced[1]);
-  }
+async function recordBlocked(error, stage) {
+  const status = {
+    schema_version: 1,
+    gate: "P-06-fresh-worker",
+    result: "blocked",
+    stage,
+    code: error?.code ?? "CP06_WORKER_FAILED",
+    recorded_at: new Date().toISOString(),
+    raw_transcript_retained: false,
+  };
+  await writeFile(join(workerRoot, "blocked.json"), `${JSON.stringify(status, null, 2)}\n`);
 }
 
 function textCommand(command, args) {
   const result = spawnSync(command, args, { cwd: root, encoding: "utf8" });
-  if (result.status !== 0) throw new Error(`${command} failed: ${result.stderr}`);
+  if (result.status !== 0) throw new Error(`${command} failed`);
   return result.stdout.trim();
 }
 
@@ -280,27 +193,4 @@ async function fileHash(path) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function isolatedPiEnvironment(home, agentDir) {
-  const environment = {
-    HOME: home,
-    PI_CODING_AGENT_DIR: agentDir,
-    PI_SKIP_VERSION_CHECK: "1",
-    PI_TELEMETRY: "0",
-  };
-  for (const name of [
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-  ]) {
-    if (process.env[name] !== undefined) environment[name] = process.env[name];
-  }
-  return environment;
 }
