@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ const fixtureRoot = join(proofRoot, "repo");
 const rawRoot = join(proofRoot, "raw");
 const cli = join(root, "dist/src/cli.js");
 const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
+configureOfflineCtxModelDir();
 const reviewer = process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker";
 const commands = [];
 
@@ -499,6 +500,49 @@ console.log(
     disconfirming_missing_original_exit: 3,
   }),
 );
+
+function configureOfflineCtxModelDir() {
+  if (process.env.CTX_MODEL_DIR !== undefined && process.env.CTX_MODEL_DIR !== "") return;
+  const modelName = "BAAI/bge-small-en-v1.5";
+  const revision = "52398278842ec682c6f32300af41344b1c0b0bb2";
+  for (const candidate of candidateModelRoots()) {
+    const modelDirectory = join(candidate, modelKey(modelName, revision));
+    const manifestPath = join(modelDirectory, "manifest.json");
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (
+        manifest.provider === "fastembed" &&
+        manifest.model_name === modelName &&
+        manifest.revision === revision &&
+        manifest.dimensions === 384
+      ) {
+        process.env.CTX_MODEL_DIR = candidate;
+        return;
+      }
+    } catch {
+      // Keep the proof fail-closed; the later CTX semantic assertion reports the blocker.
+    }
+  }
+}
+
+function candidateModelRoots() {
+  const candidates = [];
+  const home = process.env.HOME;
+  if (home !== undefined && home !== "") candidates.push(join(home, ".cache/ctx/models"));
+  const homeMatch = root.match(/^\/(?:home|Users)\/[^/]+/u);
+  if (homeMatch !== null) candidates.push(join(homeMatch[0], ".cache/ctx/models"));
+  return [...new Set(candidates)];
+}
+
+function modelKey(modelName, revision) {
+  const readable = modelName.replace(/[^A-Za-z0-9._-]+/g, "--").replace(/^-|-$/g, "");
+  const digest = createHash("sha256")
+    .update(`${modelName}\0${revision}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `${readable}-${digest}`;
+}
 
 function factoryContext(id, taskId, expectedExit) {
   const result = run(
