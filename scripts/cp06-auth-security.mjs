@@ -231,9 +231,13 @@ function assertHardenedProof(proof) {
     "direct_write_target",
     "direct_write_source",
     "unlink_target",
+    "unlink_source",
     "rename_over_target",
+    "rename_over_source",
     "symlink_replacement",
+    "symlink_source_replacement",
     "hardlink_target",
+    "hardlink_source",
     "nested_user_mount_namespace",
     "nsenter_self",
     "nsenter_supervisor",
@@ -245,6 +249,7 @@ function assertHardenedProof(proof) {
   ]) {
     assert(proof.child[name].exit !== 0, `${name} unexpectedly succeeded`);
   }
+  assert(proof.child.source.unchanged === true, "hardened child source hash changed");
   assert(proof.child.alias_underlying_write.skipped === true, "alias write was attempted");
   assert(proof.child.ordinary_node_child.exit === 0, "ordinary child process was blocked");
   assert(

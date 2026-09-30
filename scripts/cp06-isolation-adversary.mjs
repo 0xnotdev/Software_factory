@@ -49,16 +49,27 @@ function commandAttempt(name, command, args, options = {}) {
 jsAttempt("direct_write_target", () => writeFileSync(target, "DUMMY BYPASS target"));
 jsAttempt("direct_write_source", () => writeFileSync(source, "DUMMY BYPASS source"));
 jsAttempt("unlink_target", () => unlinkSync(target));
+jsAttempt("unlink_source", () => unlinkSync(source));
 const replacement = join(dirname(target), "DUMMY-replacement");
 writeFileSync(replacement, "DUMMY replacement");
 jsAttempt("rename_over_target", () => renameSync(replacement, target));
+const sourceReplacement = join(dirname(source), "DUMMY-source-replacement");
+writeFileSync(sourceReplacement, "DUMMY source replacement");
+jsAttempt("rename_over_source", () => renameSync(sourceReplacement, source));
 jsAttempt("symlink_replacement", () => {
   try {
     unlinkSync(target);
   } catch {}
   symlinkSync("/tmp/DUMMY-does-not-exist", target);
 });
+jsAttempt("symlink_source_replacement", () => {
+  try {
+    unlinkSync(source);
+  } catch {}
+  symlinkSync("/tmp/DUMMY-does-not-exist", source);
+});
 jsAttempt("hardlink_target", () => linkSync(target, join(proofRoot, "DUMMY-hardlink")));
+jsAttempt("hardlink_source", () => linkSync(source, join(proofRoot, "DUMMY-source-hardlink")));
 
 if (securityMode === "hardened") {
   commandAttempt("direct_namespace_syscalls", syscallProbe, [target]);
