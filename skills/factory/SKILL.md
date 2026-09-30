@@ -37,7 +37,21 @@ For each ready task, run:
 <factory-cli> context <TASK-ID> --root <project-root> --json
 ```
 
-Inspect the pack and receipt for the exact task contract, required original sources, source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
+Before generation, make `context.required` the reviewed task-local source selection: include every known original that can decide an acceptance or risk condition, but no unrelated documents as insurance. Factory reads those originals exactly and constrains CTX retrieval to the same document paths. Inspect the pack and receipt for the exact task contract, required originals, source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
+
+Give a fresh worker only the task-local brief, exact contract, bounded pack, and existing evidence—not a previous agent transcript. If a decisive source is absent, have the worker name it and make one targeted exact-original read, verify provenance, record the corrected assumption, and add that exact path to `context.required` before regeneration when it is durable authority. Do not widen every pack, hide raw retrieved excerpts, or omit a critical constraint to make retrieval appear complete.
+
+## Risk and task review
+
+Classify by failure consequence, not diff size, and use the higher class when observed risk exceeds the contract:
+
+- **bounded:** ordinary project checks and Firstmate's standard delivery policy;
+- **normal:** targeted integration/e2e evidence, then a fresh semantic review when feasible;
+- **critical:** explicit trust-boundary constraints, isolated negative tests, independent review, and human resolution of consequential policy. Use disposable identities only—never real accounts or secrets.
+
+Before semantic review, record the exact deterministic commands, exits, artifacts, and tested SHA. Give the reviewer the task contract, focused diff, relevant architecture and exact-original correction reads, and observed evidence—not the worker transcript. A finding must cite an acceptance ID, demonstrated scenario, or concrete risk. Repair it and rerun the changed behavior plus affected checks, record an evidence-backed disagreement, or block; unresolved critical findings cannot pass.
+
+This is task-local evidence policy, not another shipping gate. Do not call, embed, or rerun no-mistakes from Factory, and do not alter Firstmate routing or approvals. Firstmate's configured delivery invokes its normal gate once; Factory receipts may reference those resulting artifacts.
 
 ## Preview, then publish
 

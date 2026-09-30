@@ -1,0 +1,16 @@
+schema_version: 1
+id: LOG-001
+title: Redact operational logs
+outcome: Logs retain identifiers but omit credentials and record content.
+depends_on: []
+complexity: bounded
+risk: normal
+acceptance:
+  - { id: A-LOG, statement: Denied-operation logs contain no private resource fields. }
+advances: [C-LOG]
+context:
+  topics: [operational logs, redaction, denied operation]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/OBSERVABILITY.md]
+evidence:
+  required: [integration]
+delivery: project-default

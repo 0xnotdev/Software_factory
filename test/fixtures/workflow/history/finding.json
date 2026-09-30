@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "finding_id": "P07-MALFORMED-JSON",
+  "acceptance_id": "P-07",
+  "reviewer": "CP-06 simulated task reviewer",
+  "scenario": "PUT /v1/profile receives malformed JSON",
+  "finding": "The normal API fixture throws SyntaxError instead of returning the stable 400 invalid_json response.",
+  "disposition": "repaired",
+  "repair": "Catch parse failure and return status 400 with error invalid_json.",
+  "retest": "Execute the same malformed-JSON behavioral assertion against the checked-in final fixture."
+}
