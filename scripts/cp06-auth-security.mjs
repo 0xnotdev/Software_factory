@@ -146,6 +146,19 @@ export async function runIsolatedWorker(options) {
     error.code = result.status === 73 ? "CP06_ISOLATION_UNSUPPORTED" : "CP06_WORKER_FAILED";
     error.exitCode = result.status ?? 70;
     error.stderr = result.stderr;
+    // Preserve the supervisor's compact failure identity, including both causes
+    // when child execution and mount cleanup fail. Do not persist raw stderr.
+    try {
+      const failure = JSON.parse(String(result.stderr).trim());
+      if (failure.schema_version === 1 && failure.exit_code === result.status) {
+        error.workerFailure = {
+          code: failure.code,
+          exit_code: failure.exit_code,
+          causes: failure.causes,
+        };
+        if (failure.code === "CP06_CLEANUP_FAILED") error.code = failure.code;
+      }
+    } catch {}
     throw error;
   }
   return parseCompactJson(result.stdout, "isolated SDK worker");

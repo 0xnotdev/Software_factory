@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
+import { proveDummyWorkerOutcome } from "./cp06-dummy-outcome-proof.mjs";
 
 const [piRootArg] = process.argv.slice(2);
 if (!piRootArg) process.exit(64);
@@ -32,6 +33,7 @@ try {
     authCases.push(await authCase(scenario));
   }
   const worker = await fauxWorkerProof();
+  const outcomeProof = await proveDummyWorkerOutcome({ piRoot });
   assert.equal(networkCalls, 0);
   console.log(
     JSON.stringify({
@@ -39,6 +41,9 @@ try {
       result: "pass",
       auth_cases: authCases,
       sdk_worker: worker,
+      actual_sdk_outcomes: outcomeProof,
+      fixture_origin: true,
+      semantic_acceptance: false,
       network_calls: networkCalls,
     }),
   );

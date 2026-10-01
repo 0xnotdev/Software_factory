@@ -17,6 +17,7 @@
     "proof:cp06:p07": "node scripts/replay-cp06-p07.mjs",
     "proof:cp06:auth-security": "node scripts/prove-cp06-auth-security.mjs",
     "proof:cp06:worker": "node scripts/replay-cp06-worker.mjs",
+    "proof:cp06:worker-cleanup": "node scripts/prove-cp06-worker-cleanup.mjs",
     "factory": "node dist/src/cli.js"
   },
   "engines": {

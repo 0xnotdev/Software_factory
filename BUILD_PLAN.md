@@ -89,7 +89,7 @@
 
 - [x] Create tests/fixtures for critical auth isolation and normal API behavior, plus one simulated reviewer finding that causes repair and retest.
 - [x] Run an actual worker task with only task/pack/evidence sources in a fresh context; inspect whether it needs missing docs.
-- [x] **Gate:** P-06 and P-07 via the tracked ten-pack, protocol-negative/fresh-worker, and P-07 replays in `docs/probes/CP-06.md`; no change to Firstmate routing or shipping config by Factory.
+- [ ] **Gate:** P-06 and P-07 via the tracked ten-pack, protocol-negative/fresh-worker, and P-07 replays in `docs/probes/CP-06.md`; no change to Firstmate routing or shipping config by Factory. PR11 independent review rejected its A1 outcome and C1 cleanup claims; the correction requires final-head proofs and another independent review. DUMMY SDK controls are not live semantic acceptance, and strict-agent PARTIAL retrieval is not COMPLETE.
 
 ## CP-07 — Thin Pi command and status convenience
 

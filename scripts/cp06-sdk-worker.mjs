@@ -6,7 +6,8 @@ import { readFile } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06AuthBlockedError, Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
-import { auditReadEvents, isExpectedOriginalReference } from "./cp06-worker-audit.mjs";
+import { auditReadEvents } from "./cp06-worker-audit.mjs";
+import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 
 const [credentialTargetArg, inputPathArg] = process.argv.slice(2);
 if (!credentialTargetArg || !inputPathArg) process.exit(64);
@@ -104,22 +105,12 @@ try {
   if (!readAudit.ok) {
     throw blocked(`SDK event audit failed: ${readAudit.reason}`);
   }
-  const corrected = Array.isArray(response.corrected_constraints)
-    ? response.corrected_constraints.join(" ")
-    : "";
-  if (
-    response.status !== "MISSING_SOURCE" ||
-    !isExpectedOriginalReference(response.missing_source, {
-      root: input.root,
-      referenceRoot: input.fixture_root,
-      expectedOriginalPath: input.original_path,
-    }) ||
-    response.broad_scan !== false ||
-    !/ownership comes only from the authenticated principal/i.test(corrected) ||
-    !/request-supplied owner fields? (?:are )?ignored/i.test(corrected)
-  ) {
-    throw blocked("SDK worker response did not satisfy the targeted-read oracle");
-  }
+  const outcome = auditWorkerOutcome(response, {
+    root: input.root,
+    referenceRoot: input.fixture_root,
+    expectedOriginalPath: input.original_path,
+  });
+  if (!outcome.ok) throw blocked(`SDK worker outcome failed: ${outcome.reason}`);
 
   console.log(
     JSON.stringify({
@@ -244,7 +235,7 @@ function emptyResourceLoader(sdk, systemPrompt) {
 }
 
 function buildPrompt({ contract, pack, originalPath }) {
-  return `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
+  return `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. The evidence_gaps field must be exactly [{"id":"creation-time-ownership","status":"unverified","missing_checks":["principal-derived-owner","request-owner-ignored"]}]: the supplied deterministic evidence does not test those creation-time behaviors. Recovering a requirement by reading is not evidence that the behavior passed. Do not add a passed/verified disposition or prose fields to this structured gap. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
 }
 
 function finalAssistantText(events) {
