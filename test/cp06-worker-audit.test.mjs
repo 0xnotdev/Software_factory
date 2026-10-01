@@ -144,6 +144,22 @@ test("worker missing-source identity accepts only the canonical original path", 
     true,
   );
   assert.equal(
+    isExpectedOriginalReference("./docs/AUTH.md", {
+      root,
+      referenceRoot: fixtureRoot,
+      expectedOriginalPath: originalPath,
+    }),
+    false,
+  );
+  assert.equal(
+    isExpectedOriginalReference(originalPath, {
+      root,
+      referenceRoot: fixtureRoot,
+      expectedOriginalPath: originalPath,
+    }),
+    false,
+  );
+  assert.equal(
     isExpectedOriginalReference("docs/OTHER.md", {
       root,
       referenceRoot: fixtureRoot,

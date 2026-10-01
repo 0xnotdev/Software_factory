@@ -61,6 +61,8 @@ test("creation evidence cannot replace source recovery or relax the read outcome
   for (const change of [
     { status: "PASS" },
     { missing_source: "docs/OTHER.md" },
+    { missing_source: "./docs/AUTH.md" },
+    { missing_source: resolve(root, "test/fixtures/cp06-context/docs/AUTH.md") },
     { broad_scan: true },
     { corrected_constraints: [] },
   ])
