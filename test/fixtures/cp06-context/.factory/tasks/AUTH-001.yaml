@@ -1,0 +1,19 @@
+schema_version: 1
+id: AUTH-001
+title: Bind item ownership to authenticated principal
+outcome: Creation ignores request-supplied ownership and cross-account operations remain concealed.
+depends_on: []
+complexity: bounded
+risk: critical
+acceptance:
+  - {
+      id: A-AUTH,
+      statement: Missing or forged credentials return 401 and cross-account read update and delete return non-mutating 404.,
+    }
+advances: [C-AUTH]
+context:
+  topics: [principal ownership, tenancy, forged credentials]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/AUTH.md]
+evidence:
+  required: [integration]
+delivery: project-default
