@@ -1,5 +1,15 @@
 import { strict as assert } from "node:assert";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -272,6 +282,144 @@ test("the probe executable refuses arbitrary and symlinked DUMMY roots before ac
     assert.equal(await readFile(secret, "utf8"), "DUMMY SECRET NEVER READ");
   } finally {
     await rm(alias);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("proof entrypoint rejects a symlinked output without writing outside state", async () => {
+  const directory = await mkdtemp(join(resolve(".factory/state"), "DUMMY-output-reject-"));
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-external-"));
+  const sentinel = join(external, "DUMMY-sentinel");
+  await writeFile(sentinel, "DUMMY untouched");
+  await symlink(external, join(directory, "auth-security"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["--experimental-import-meta-resolve", resolve("scripts/prove-cp06-auth-security.mjs")],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 15_000,
+        env: { ...process.env, CP06_OUTPUT: directory },
+      },
+    );
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(await readdir(external), ["DUMMY-sentinel"]);
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY untouched");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("probe transition rejects DUMMY substitutions before mount for both modes", async () => {
+  const directory = await mkdtemp(join(resolve(".factory/state"), "DUMMY-transition-"));
+  const sentinel = join(directory, "DUMMY-sentinel-secret.json");
+  await writeFile(sentinel, "DUMMY-SENTINEL-SECRET");
+  try {
+    for (const mode of ["unsafe-probe", "hardened-probe"]) {
+      for (const scenario of [
+        "unchanged",
+        "append",
+        "truncate",
+        "rewrite",
+        "source-ancestor",
+        "target-slot",
+      ]) {
+        const result = spawnSync(
+          "unshare",
+          [
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--propagation",
+            "private",
+            "--",
+            process.execPath,
+            resolve("test/fixtures/cp06-probe-transition.mjs"),
+            mode,
+            scenario,
+            sentinel,
+          ],
+          { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 },
+        );
+        assert.equal(result.status, 0, `${mode}/${scenario}: ${result.stderr}`);
+        const proof = JSON.parse(result.stdout);
+        assert.equal(proof.sentinel_unchanged, true);
+        assert.equal(proof.mounts, 0);
+        assert.equal(proof.launches, 0);
+        if (scenario === "source-ancestor" || scenario === "target-slot") {
+          assert.equal(proof.failure.code, "CP06_ISOLATION_SETUP_FAILED");
+          assert.equal(JSON.stringify(proof).includes("DUMMY-SENTINEL-SECRET"), false);
+        }
+      }
+    }
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY-SENTINEL-SECRET");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("nested audit, mount and fixture cleanup failures retain typed causes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-nested-cleanup-"));
+  try {
+    let caught;
+    try {
+      await superviseCredentialChild(
+        {
+          mode: "unsafe-probe",
+          source: resolve(".factory/state/cp06-correction/auth-security"),
+          target: "-",
+          helper: "/DUMMY-helper",
+          syscallProbe: "/DUMMY-probe",
+        },
+        {
+          createProbeFixture() {
+            return {
+              source: join(directory, "DUMMY-source"),
+              target: join(directory, "DUMMY-target"),
+              beforeHash: "DUMMY",
+              cleanup() {
+                throw new Error("DUMMY fixture secret");
+              },
+            };
+          },
+          mount() {
+            return {
+              mountIds: { source: "1", target: "2" },
+              parentMounts: [],
+              cleanup() {
+                throw new Error("DUMMY mount secret");
+              },
+            };
+          },
+          spawn() {
+            return { status: 0, stdout: "DUMMY malformed", stderr: "DUMMY child secret" };
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    assert(caught instanceof AggregateError);
+    const record = supervisorFailureRecord(caught);
+    assert.equal(record.code, "CP06_CLEANUP_FAILED");
+    assert.deepEqual(
+      record.causes.map(({ stage, code }) => [stage, code]),
+      [
+        ["audit", "CP06_CHILD_OUTPUT_INVALID"],
+        ["cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED"],
+        ["cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED"],
+      ],
+    );
+    const wrapped = namespaceWorkerError({ status: 74, stderr: JSON.stringify(record) });
+    assert.deepEqual(
+      createWorkerBlockedStatus(wrapped, "isolated-sdk-worker").worker_failure,
+      record,
+    );
+    assert.equal(JSON.stringify(record).includes("secret"), false);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

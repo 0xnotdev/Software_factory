@@ -1,64 +1,94 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants, openSync, closeSync, fstatSync, lstatSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 const original = Buffer.from("DUMMY ORIGINAL");
+const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
-export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }) {
+export function openProbeOutput({ root, outputRoot, create = false }) {
   const state = resolve(root, ".factory/state");
   const selected = resolve(outputRoot);
   const subpath = relative(state, selected);
   if (
-    subpath.startsWith("..") ||
+    selected !== outputRoot ||
     subpath === "" ||
-    !subpath.split("/").includes("auth-security") ||
-    selected !== outputRoot
+    subpath === ".." ||
+    subpath.startsWith("../") ||
+    !(subpath === "cp06-auth-security" || subpath.split("/").includes("auth-security"))
   )
     throw new Error("DUMMY proof root is outside task-local auth-security state");
 
-  const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const projectFd = openSync(root, directoryFlags);
-  let factoryFd;
-  let stateFd;
+  let currentFd = projectFd;
   try {
-    factoryFd = openSync(`/proc/${process.pid}/fd/${projectFd}/.factory`, directoryFlags);
-    stateFd = openSync(`/proc/${process.pid}/fd/${factoryFd}/state`, directoryFlags);
+    const components = [".factory", "state", ...subpath.split("/")];
+    let scanFd = projectFd;
+    try {
+      for (const component of components) {
+        const path = join(`/proc/${process.pid}/fd/${scanFd}`, component);
+        try {
+          const entry = lstatSync(path);
+          if (!entry.isDirectory()) throw new Error("DUMMY proof output contains a non-directory");
+          const nextFd = openSync(path, directoryFlags);
+          if (scanFd !== projectFd) closeSync(scanFd);
+          scanFd = nextFd;
+        } catch (error) {
+          if (error?.code !== "ENOENT" || !create) throw error;
+          break;
+        }
+      }
+    } finally {
+      if (scanFd !== projectFd) closeSync(scanFd);
+    }
+    for (const component of components) {
+      const path = join(`/proc/${process.pid}/fd/${currentFd}`, component);
+      if (create) {
+        try {
+          mkdirSync(path, { mode: 0o700 });
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+      }
+      const nextFd = openSync(path, directoryFlags);
+      if (currentFd !== projectFd) closeSync(currentFd);
+      currentFd = nextFd;
+    }
+    const outputFd = currentFd;
+    currentFd = projectFd;
+    return {
+      path: selected,
+      anchor: `/proc/${process.pid}/fd/${outputFd}`,
+      identity: fstatSync(outputFd, { bigint: true }),
+      close() {
+        closeSync(outputFd);
+      },
+    };
   } finally {
-    if (factoryFd !== undefined) closeSync(factoryFd);
+    if (currentFd !== projectFd) closeSync(currentFd);
     closeSync(projectFd);
   }
-  let outputFd;
-  let traversedFd;
+}
+
+export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }) {
+  const output = openProbeOutput({ root, outputRoot });
   let rootFd;
+  let sourceDirFd;
+  let agentDirFd;
   let sourceFd;
   let directory;
   let mounted = false;
   try {
-    for (const component of subpath.split("/")) {
-      const nextFd = openSync(
-        join(`/proc/${process.pid}/fd/${traversedFd ?? stateFd}`, component),
-        directoryFlags,
-      );
-      if (traversedFd !== undefined) closeSync(traversedFd);
-      traversedFd = nextFd;
-    }
-    outputFd = traversedFd;
-    traversedFd = undefined;
-    if (
-      lstatSync(selected, { bigint: true }).ino !== fstatSync(outputFd, { bigint: true }).ino ||
-      lstatSync(selected, { bigint: true }).dev !== fstatSync(outputFd, { bigint: true }).dev
-    ) {
-      throw new Error("DUMMY proof root identity changed");
-    }
-    directory = await mkdtemp(join(`/proc/${process.pid}/fd/${outputFd}`, "DUMMY-probe-"));
+    directory = await mkdtemp(join(output.anchor, "DUMMY-probe-"));
     checkedMount(spawn, ["-t", "tmpfs", "-o", "mode=0700,nosuid,nodev,noexec", "tmpfs", directory]);
     mounted = true;
     rootFd = openSync(directory, directoryFlags);
     const anchoredRoot = `/proc/${process.pid}/fd/${rootFd}`;
     await mkdir(join(anchoredRoot, "source"), { mode: 0o700 });
     await mkdir(join(anchoredRoot, "agent"), { mode: 0o700 });
+    sourceDirFd = openSync(join(anchoredRoot, "source"), directoryFlags);
+    agentDirFd = openSync(join(anchoredRoot, "agent"), directoryFlags);
     const source = join(anchoredRoot, "source/DUMMY-auth.json");
     const target = join(anchoredRoot, "agent/DUMMY-auth.json");
     await writeFile(source, original, { flag: "wx", mode: 0o600 });
@@ -72,18 +102,44 @@ export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }
       throw new Error("DUMMY source identity changed");
     }
     const beforeHash = hashPinned(sourceFd, original.length);
+    const sourceParent = fstatSync(sourceDirFd, { bigint: true });
+    const targetParent = fstatSync(agentDirFd, { bigint: true });
     return {
       source,
       target,
       cwd: anchoredRoot,
       beforeHash,
+      assertSafePaths({ mounted = false } = {}) {
+        if (
+          !sameInode(sourceParent, lstatSync(join(anchoredRoot, "source"), { bigint: true })) ||
+          !sameInode(targetParent, lstatSync(join(anchoredRoot, "agent"), { bigint: true })) ||
+          !sameInode(pinned, lstatSync(source, { bigint: true }))
+        )
+          throw new Error("DUMMY fixture path identity changed");
+        if (mounted) {
+          if (!sameInode(pinned, lstatSync(target, { bigint: true }))) {
+            throw new Error("DUMMY fixture target identity changed");
+          }
+        } else {
+          try {
+            lstatSync(target);
+            throw new Error("DUMMY fixture target was replaced");
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        }
+      },
       sourceUnchanged() {
         try {
           const named = lstatSync(source, { bigint: true });
+          const current = fstatSync(sourceFd, { bigint: true });
           return (
             sameInode(pinned, named) &&
             named.isFile() &&
-            hashPinned(sourceFd, original.length) === beforeHash
+            sameInode(pinned, current) &&
+            current.size === pinned.size &&
+            named.size === pinned.size &&
+            hashPinned(sourceFd, Number(pinned.size)) === beforeHash
           );
         } catch {
           return false;
@@ -97,22 +153,23 @@ export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }
         });
         if (mountedAlias.status === 0) checkedMount(spawn, ["--", alias], "umount");
         closeSync(sourceFd);
+        closeSync(sourceDirFd);
+        closeSync(agentDirFd);
         closeSync(rootFd);
         checkedMount(spawn, ["--", directory], "umount");
         mounted = false;
         await rm(directory, { recursive: true, force: true });
-        closeSync(outputFd);
-        closeSync(stateFd);
+        output.close();
       },
     };
   } catch (error) {
     if (sourceFd !== undefined) closeSync(sourceFd);
+    if (sourceDirFd !== undefined) closeSync(sourceDirFd);
+    if (agentDirFd !== undefined) closeSync(agentDirFd);
     if (rootFd !== undefined) closeSync(rootFd);
     if (mounted) checkedMount(spawn, ["--", directory], "umount");
     if (directory !== undefined) await rm(directory, { recursive: true, force: true });
-    if (outputFd !== undefined) closeSync(outputFd);
-    if (traversedFd !== undefined) closeSync(traversedFd);
-    closeSync(stateFd);
+    output.close();
     throw error;
   }
 }

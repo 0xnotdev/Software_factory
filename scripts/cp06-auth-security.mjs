@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
+import { openProbeOutput } from "./cp06-probe-fixture.mjs";
 
 export class Cp06IsolationUnsupportedError extends Error {
   constructor(message) {
@@ -16,48 +16,56 @@ export class Cp06IsolationUnsupportedError extends Error {
 export async function runCp06SecurityPreflight(options = {}) {
   const root = resolve(options.root ?? process.cwd());
   const outputRoot = resolve(options.outputRoot ?? join(root, ".factory/state/cp06-auth-security"));
-  await mkdir(outputRoot, { recursive: true });
-  const prerequisites = verifyIsolationPrerequisites({
-    root,
-    spawnSyncImpl: options.spawnSyncImpl,
-  });
-  const binaries = compileIsolationHelpers({ root, outputRoot });
-  const pi = resolvePiPackage(root, options);
-  const unsafe = await runIsolationProbe({
-    root,
-    outputRoot,
-    mode: "unsafe-probe",
-    binaries,
-  });
-  assertUnsafeControl(unsafe);
-  const hardened = await runIsolationProbe({
-    root,
-    outputRoot,
-    mode: "hardened-probe",
-    binaries,
-  });
-  assertHardenedProof(hardened);
-  const sdk = runDummySdkProof({ root, helper: binaries.helper, piRoot: pi.root });
-  return {
-    schema_version: 1,
-    gate: "CP-06-read-only-auth-security",
-    result: "pass",
-    tested_sha: commandText(spawnSync, "git", ["rev-parse", "HEAD"], root),
-    recorded_at: new Date().toISOString(),
-    reviewer: options.reviewer ?? "Pi CP-06 read-only auth correction worker",
-    command: "npm run proof:cp06:auth-security",
-    exit_code: 0,
-    pi_version: pi.version,
-    pi_install: pi.provenance,
-    platform: prerequisites,
-    binaries: {
-      seccomp_helper_sha256: sha256(readFileSync(binaries.helper)),
-      syscall_probe_sha256: sha256(readFileSync(binaries.syscallProbe)),
-    },
-    unsafe_control: summarizeUnsafe(unsafe),
-    hardened_child: summarizeHardened(hardened),
-    dummy_sdk: sdk,
-  };
+  const output = openProbeOutput({ root, outputRoot, create: true });
+  try {
+    const prerequisites = verifyIsolationPrerequisites({
+      root,
+      spawnSyncImpl: options.spawnSyncImpl,
+    });
+    const binaries = compileIsolationHelpers({
+      root,
+      outputRoot,
+      anchoredOutputRoot: output.anchor,
+    });
+    const pi = resolvePiPackage(root, options);
+    const unsafe = await runIsolationProbe({
+      root,
+      outputRoot,
+      mode: "unsafe-probe",
+      binaries,
+    });
+    assertUnsafeControl(unsafe);
+    const hardened = await runIsolationProbe({
+      root,
+      outputRoot,
+      mode: "hardened-probe",
+      binaries,
+    });
+    assertHardenedProof(hardened);
+    const sdk = runDummySdkProof({ root, helper: binaries.helper, piRoot: pi.root });
+    return {
+      schema_version: 1,
+      gate: "CP-06-read-only-auth-security",
+      result: "pass",
+      tested_sha: commandText(spawnSync, "git", ["rev-parse", "HEAD"], root),
+      recorded_at: new Date().toISOString(),
+      reviewer: options.reviewer ?? "Pi CP-06 read-only auth correction worker",
+      command: "npm run proof:cp06:auth-security",
+      exit_code: 0,
+      pi_version: pi.version,
+      pi_install: pi.provenance,
+      platform: prerequisites,
+      binaries: {
+        seccomp_helper_sha256: sha256(readFileSync(binaries.helper)),
+        syscall_probe_sha256: sha256(readFileSync(binaries.syscallProbe)),
+      },
+      unsafe_control: summarizeUnsafe(unsafe),
+      hardened_child: summarizeHardened(hardened),
+      dummy_sdk: sdk,
+    };
+  } finally {
+    output.close();
+  }
 }
 
 export function verifyIsolationPrerequisites(options = {}) {
@@ -95,6 +103,11 @@ export function compileIsolationHelpers(options) {
   const outputRoot = resolve(options.outputRoot);
   const helper = join(outputRoot, "cp06-seccomp-exec");
   const syscallProbe = join(outputRoot, "cp06-isolation-syscalls");
+  const anchoredHelper = join(options.anchoredOutputRoot ?? outputRoot, "cp06-seccomp-exec");
+  const anchoredSyscallProbe = join(
+    options.anchoredOutputRoot ?? outputRoot,
+    "cp06-isolation-syscalls",
+  );
   checked(
     "cc",
     [
@@ -106,7 +119,7 @@ export function compileIsolationHelpers(options) {
       join(root, "scripts/cp06-seccomp-exec.c"),
       "-Wl,-l:libseccomp.so.2",
       "-o",
-      helper,
+      anchoredHelper,
     ],
     root,
   );
@@ -120,7 +133,7 @@ export function compileIsolationHelpers(options) {
       "-Werror",
       join(root, "scripts/cp06-isolation-syscalls.c"),
       "-o",
-      syscallProbe,
+      anchoredSyscallProbe,
     ],
     root,
   );

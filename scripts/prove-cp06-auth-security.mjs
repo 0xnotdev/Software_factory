@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cp06IsolationUnsupportedError, runCp06SecurityPreflight } from "./cp06-auth-security.mjs";
+import { openProbeOutput } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
@@ -13,7 +14,12 @@ try {
     reviewer: process.env.CP06_REVIEWER,
   });
   const path = resolve(outputRoot, "auth-security", "evidence.json");
-  await writeFile(path, `${JSON.stringify(proof, null, 2)}\n`);
+  const output = openProbeOutput({ root, outputRoot: resolve(outputRoot, "auth-security") });
+  try {
+    await writeFile(resolve(output.anchor, "evidence.json"), `${JSON.stringify(proof, null, 2)}\n`);
+  } finally {
+    output.close();
+  }
   console.log(
     JSON.stringify({
       ok: true,

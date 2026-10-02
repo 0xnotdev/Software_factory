@@ -54,6 +54,7 @@ export async function superviseCredentialChild(options, dependencies = {}) {
       withCleanup(
         async () => {
           try {
+            probe?.assertSafePaths?.();
             mount = await mountCredential({
               root,
               source,
@@ -75,6 +76,13 @@ export async function superviseCredentialChild(options, dependencies = {}) {
               );
             }
             throw setup;
+          }
+          if (probe !== undefined) {
+            try {
+              probe.assertSafePaths?.({ mounted: true });
+            } catch (cause) {
+              throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74, cause);
+            }
           }
           const command = childCommand({
             mode,
@@ -244,8 +252,7 @@ export function supervisorFailureRecord(error) {
     code: failure.code,
     exit_code: failure.exit_code,
     description: failure.description,
-    causes:
-      error instanceof AggregateError ? error.errors.map((cause) => classifyFailure(cause)) : [],
+    causes: error instanceof AggregateError ? leafCauses(error).map(classifyFailure) : [],
   };
 }
 
@@ -266,13 +273,31 @@ function hasErrorCode(error, code) {
   return error instanceof AggregateError && error.errors.some((cause) => hasErrorCode(cause, code));
 }
 
+function leafCauses(error, limit = 8) {
+  const leaves = [];
+  function visit(cause) {
+    if (leaves.length >= limit) return;
+    if (cause instanceof AggregateError && cause.errors.length > 0) {
+      for (const nested of cause.errors) visit(nested);
+    } else leaves.push(cause);
+  }
+  visit(error);
+  return leaves;
+}
+
+function safeExitCode(error) {
+  return Number.isSafeInteger(error?.exitCode) && error.exitCode >= 1 && error.exitCode <= 255
+    ? error.exitCode
+    : null;
+}
+
 function classifyFailure(error) {
   const known = FAILURE_DESCRIPTIONS[error?.code];
   if (known !== undefined) {
     return {
-      stage: error.stage ?? known.stage,
+      stage: known.stage,
       code: error.code,
-      exit_code: error.exitCode ?? null,
+      exit_code: safeExitCode(error),
       description: known.description,
     };
   }
@@ -280,14 +305,14 @@ function classifyFailure(error) {
     return {
       stage: "cleanup",
       code: "CP06_CLEANUP_FAILED",
-      exit_code: error.exitCode ?? 74,
+      exit_code: safeExitCode(error) ?? 74,
       description: "credential namespace cleanup failed",
     };
   }
   return {
     stage: "cleanup",
     code: "CP06_CREDENTIAL_CLEANUP_FAILED",
-    exit_code: error?.exitCode ?? null,
+    exit_code: safeExitCode(error),
     description: "credential mount cleanup failed",
   };
 }
