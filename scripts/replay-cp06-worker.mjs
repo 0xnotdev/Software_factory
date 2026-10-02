@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
-import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
 import {
   Cp06IsolationUnsupportedError,
   runCp06SecurityPreflight,
@@ -16,7 +17,8 @@ import {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
-const workerRoot = join(output.anchor, "worker");
+const workerDirectory = openAnchoredDirectory(output.anchor, "worker", { reset: true });
+const workerRoot = workerDirectory.anchor;
 const securityRoot = join(outputRoot, "auth-security");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
 const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-worker-missing.pack.md");
@@ -38,8 +40,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 }
 
 async function main() {
-  await rm(workerRoot, { recursive: true, force: true });
-  await mkdir(workerRoot, { recursive: true });
   let security;
   try {
     // This DUMMY-only gate includes the unsafe control, hardened evaluated-child
@@ -49,6 +49,7 @@ async function main() {
       root,
       outputRoot: securityRoot,
       reviewer: process.env.CP06_REVIEWER,
+      retainBinaries: true,
     });
   } catch (error) {
     await recordBlocked(error, "dummy-security-preflight");
@@ -67,18 +68,15 @@ async function main() {
     timeout_ms: timeoutMs,
     system_prompt: systemPrompt,
   };
-  const inputPath = join(outputRoot, "worker", "input.json");
-  await writeFile(join(workerRoot, "input.json"), `${JSON.stringify(workerInput, null, 2)}\n`);
+  const inputPath = join(workerRoot, "input.json");
+  await writeFile(inputPath, `${JSON.stringify(workerInput, null, 2)}\n`);
   const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-sdk-worker-"));
   const credentialTarget = join(evaluationHome, "pi-agent", "auth.json");
   const credentialSource = resolve(
     process.env.CP06_PI_AUTH_FILE ??
       join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "auth.json"),
   );
-  const binaries = {
-    helper: join(securityRoot, "cp06-seccomp-exec"),
-    syscallProbe: join(securityRoot, "cp06-isolation-syscalls"),
-  };
+  const binaries = security.retainedBinaries;
   let isolated;
   try {
     isolated = await withCleanup(
@@ -96,6 +94,8 @@ async function main() {
   } catch (error) {
     await recordBlocked(error, "isolated-sdk-worker");
     throw error;
+  } finally {
+    binaries?.close?.();
   }
   if (
     isolated.mode !== "worker" ||
@@ -222,9 +222,10 @@ function textCommand(command, args) {
 }
 
 function relative(path) {
-  const located = path.startsWith(`${output.anchor}/`)
-    ? join(outputRoot, path.slice(output.anchor.length + 1))
-    : path;
+  let located = path;
+  try {
+    located = realpathSync(path);
+  } catch {}
   return located.startsWith(`${root}/`) ? located.slice(root.length + 1) : located;
 }
 

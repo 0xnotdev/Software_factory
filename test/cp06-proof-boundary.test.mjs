@@ -1,10 +1,20 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { runDummySdkProof, runIsolationProbe } from "../scripts/cp06-auth-security.mjs";
+import { openAnchoredDirectory, openProbeOutput } from "../scripts/cp06-probe-fixture.mjs";
 
 const runners = [
   "scripts/replay-cp06-worker.mjs",
@@ -86,9 +96,12 @@ test("failed DUMMY probes never forward child output or spawn exceptions", async
           ),
           false,
         );
-        if (result.stderr === JSON.stringify(structured))
+        if (result.stderr === JSON.stringify(structured)) {
           assert.deepEqual(error.workerFailure, structured);
-        else assert.equal(error.workerFailure, undefined);
+        } else if (result.error?.code === "ETIMEDOUT") {
+          assert.equal(error.workerFailure.code, "CP06_CHILD_TIMEOUT");
+          assert.equal(error.workerFailure.stage, "timeout");
+        } else assert.equal(error.workerFailure, undefined);
         return true;
       },
     );
@@ -115,3 +128,128 @@ test("failed DUMMY probes never forward child output or spawn exceptions", async
     );
   }
 });
+
+test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
+  const validBase = {
+    schema_version: 1,
+    result: "pass",
+    auth_cases: [
+      authCase("expired", "blocked", 0),
+      authCase("near_expiry", "blocked", 0),
+      authCase("unexpired", "resolved", 1),
+    ],
+    sdk_worker: {
+      active_tools: ["read"],
+      in_memory_session: true,
+      event_count: 2,
+      event_sha256: "0".repeat(64),
+      read_audit: { exact_original: true, read_count: 1 },
+      refresh_callbacks: 0,
+      credential_store: credentialAudit(),
+    },
+    sdk_dependency: { version: "0.85.1", package_sha256: "1".repeat(64) },
+    actual_sdk_outcomes: {
+      fixture_origin: true,
+      semantic_acceptance: false,
+      cases: [
+        outcome("valid", 0),
+        outcome("fenced-valid", 0),
+        outcome("extra-before-fence", 75),
+        outcome("empty-gap", 75),
+        outcome("missing-gap", 75),
+        outcome("contradictory-gap", 75),
+        outcome("extra-evidence", 75),
+        outcome("constraint-pass", 75),
+        outcome("missing-reads", 75),
+        outcome("credential-read", 75),
+        outcome("symlink-read", 75),
+        outcome("expired", 75, { runtime_create: 0 }),
+        outcome("near-expiry", 75, { runtime_create: 0 }),
+        outcome("timeout", 70),
+      ],
+    },
+    fixture_origin: true,
+    semantic_acceptance: false,
+    network_calls: 0,
+  };
+  for (const payload of [
+    { ...validBase, auth_cases: [] },
+    { ...validBase, auth_cases: [...validBase.auth_cases, authCase("expired", "blocked", 0)] },
+    { ...validBase, extra: "DUMMY-SECRET" },
+    { ...validBase, sdk_worker: { ...validBase.sdk_worker, active_tools: ["read", "write"] } },
+  ]) {
+    assert.throws(
+      () =>
+        runDummySdkProof({
+          root: process.cwd(),
+          helper: "/DUMMY-helper",
+          piRoot: "/DUMMY-pi",
+          spawnSyncImpl() {
+            return { status: 0, stdout: JSON.stringify(payload), stderr: "" };
+          },
+        }),
+      (error) => !String(error.message).includes("DUMMY-SECRET"),
+    );
+  }
+  const accepted = runDummySdkProof({
+    root: process.cwd(),
+    helper: "/DUMMY-helper",
+    piRoot: "/DUMMY-pi",
+    spawnSyncImpl() {
+      return { status: 0, stdout: JSON.stringify(validBase), stderr: "" };
+    },
+  });
+  assert.equal(accepted.result, "pass");
+});
+
+test("anchored runner child directories do not follow substituted paths", async () => {
+  const root = process.cwd();
+  const outputRoot = resolve(".factory/state/cp06-correction/DUMMY-child-anchor");
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-child-external-"));
+  const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+  const child = openAnchoredDirectory(output.anchor, "worker", { reset: true });
+  try {
+    await rename(join(outputRoot, "worker"), join(outputRoot, "worker-original"));
+    await symlink(external, join(outputRoot, "worker"));
+    await writeFile(join(child.anchor, "input.json"), "DUMMY anchored write");
+    assert.deepEqual(await readdir(external), []);
+    assert.equal(
+      await readFile(join(outputRoot, "worker-original", "input.json"), "utf8"),
+      "DUMMY anchored write",
+    );
+  } finally {
+    child.close();
+    output.close();
+    await rm(outputRoot, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+function authCase(scenario, result, toAuth) {
+  return {
+    scenario,
+    result,
+    refresh_callbacks: 0,
+    to_auth_calls: toAuth,
+    credential_store: credentialAudit(),
+    persistence_operations: 0,
+    source_unchanged: true,
+  };
+}
+
+function credentialAudit() {
+  return { reads: 1, lists: 0, modify_denials: 1, delete_denials: 1 };
+}
+
+function outcome(scenario, exitCode, extra = {}) {
+  return {
+    scenario,
+    exit_code: exitCode,
+    expected_exit_code: exitCode,
+    default_storage: 0,
+    network: 0,
+    refresh: 0,
+    source_unchanged: true,
+    ...extra,
+  };
+}

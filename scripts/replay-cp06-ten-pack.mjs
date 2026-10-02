@@ -1,27 +1,27 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureSource = join(root, "test/fixtures/cp06-context");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
-const proofRoot = join(output.anchor, "ten-pack");
+const proofDirectory = openAnchoredDirectory(output.anchor, "ten-pack", { reset: true });
+const rawDirectory = openAnchoredDirectory(proofDirectory.anchor, "raw");
+const proofRoot = proofDirectory.anchor;
 const fixtureRoot = join(proofRoot, "repo");
-const rawRoot = join(proofRoot, "raw");
+const rawRoot = rawDirectory.anchor;
 const cli = join(root, "dist/src/cli.js");
 const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
 configureOfflineCtxModelDir();
 const reviewer = process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker";
 const commands = [];
 
-await rm(proofRoot, { recursive: true, force: true });
-await mkdir(rawRoot, { recursive: true });
 await cp(fixtureSource, fixtureRoot, { recursive: true });
 await mkdir(join(fixtureRoot, ".factory/state"), { recursive: true });
 const oracle = JSON.parse(await readFile(join(fixtureRoot, "oracle.json"), "utf8"));
@@ -680,9 +680,10 @@ function quote(parts) {
 }
 
 function relative(path) {
-  const located = path.startsWith(`${output.anchor}/`)
-    ? join(outputRoot, path.slice(output.anchor.length + 1))
-    : path;
+  let located = path;
+  try {
+    located = realpathSync(path);
+  } catch {}
   return located.startsWith(`${root}/`) ? located.slice(root.length + 1) : located;
 }
 

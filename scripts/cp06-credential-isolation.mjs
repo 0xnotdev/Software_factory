@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const MAX_CREDENTIAL_BYTES = 1024 * 1024;
 const REQUIRED_VFS_OPTIONS = ["ro", "nosuid", "nodev", "noexec"];
@@ -50,7 +50,7 @@ export async function proveDummyCredentialIsolation(options = {}) {
       mount_ids: mount.mountIds,
     };
   } finally {
-    mount?.cleanup();
+    await mount?.cleanup();
     await rm(proofRoot, { recursive: true, force: true });
   }
 }
@@ -69,20 +69,40 @@ export async function mountLiveCredentialReadOnly(options) {
   const statPath = options.lstatImpl ?? lstat;
   const protectParents = options.protectParents !== false;
   let handle;
+  let sourceParentHandle;
+  let targetParentHandle;
   let sourceMounted = false;
   let targetMounted = false;
+  let sourceMountPath = source;
+  let targetMountPath = target;
   const mountedParents = [];
+  let parentHandlesTransferred = false;
   try {
-    handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
+    sourceParentHandle = await open(
+      dirname(source),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+    );
+    const sourceParentPath = `/proc/${process.pid}/fd/${sourceParentHandle.fd}`;
+    sourceMountPath = join(sourceParentPath, basename(source));
+    handle = await open(
+      sourceMountPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+    );
     const pinned = await handle.stat({ bigint: true });
-    const named = await statPath(source, { bigint: true });
+    const named = await statPath(sourceMountPath, { bigint: true });
     assertPinnedRegularFile(pinned, named, maxBytes);
 
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    await writeFile(target, "", { flag: "wx", mode: 0o600 });
+    targetParentHandle = await open(
+      dirname(target),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+    );
+    const targetParentPath = `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
+    targetMountPath = join(targetParentPath, basename(target));
+    await writeFile(targetMountPath, "", { flag: "wx", mode: 0o600 });
     const parentMounts = [];
     if (protectParents) {
-      for (const parent of [...new Set([dirname(source), dirname(target)])]) {
+      for (const parent of [...new Set([sourceParentPath, targetParentPath])]) {
         checkedSpawn("mount", ["--bind", parent, parent], { root, spawn });
         mountedParents.push(parent);
         checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", parent], {
@@ -94,25 +114,25 @@ export async function mountLiveCredentialReadOnly(options) {
     }
     const pinnedPath = `/proc/${process.pid}/fd/${handle.fd}`;
 
-    checkedSpawn("mount", ["--bind", pinnedPath, source], { root, spawn });
+    checkedSpawn("mount", ["--bind", pinnedPath, sourceMountPath], { root, spawn });
     sourceMounted = true;
-    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", source], {
+    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", sourceMountPath], {
       root,
       spawn,
     });
-    checkedSpawn("mount", ["--bind", pinnedPath, target], { root, spawn });
+    checkedSpawn("mount", ["--bind", pinnedPath, targetMountPath], { root, spawn });
     targetMounted = true;
-    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", target], {
+    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", targetMountPath], {
       root,
       spawn,
     });
 
-    const sourceMount = inspectReadOnlyMount(source, { spawn });
-    const targetMount = inspectReadOnlyMount(target, { spawn });
+    const sourceMount = inspectReadOnlyMount(sourceMountPath, { spawn });
+    const targetMount = inspectReadOnlyMount(targetMountPath, { spawn });
     if (sourceMount.id === targetMount.id) {
       throw new Error("credential source and target did not receive distinct mount instances");
     }
-    for (const path of [source, target]) {
+    for (const path of [sourceMountPath, targetMountPath]) {
       const mounted = await statPath(path, { bigint: true });
       if (!mounted.isFile() || !sameStatIdentity(pinned, mounted)) {
         throw new Error(`credential mount identity changed: ${path}`);
@@ -122,6 +142,7 @@ export async function mountLiveCredentialReadOnly(options) {
     handle = undefined;
 
     let cleaned = false;
+    parentHandlesTransferred = true;
     return {
       source,
       target,
@@ -129,12 +150,12 @@ export async function mountLiveCredentialReadOnly(options) {
       mountIds: { source: sourceMount.id, target: targetMount.id },
       parentMounts: parentMounts.map((entry) => ({ id: entry.id, target: entry.target })),
       async verifyIntegrity() {
-        for (const path of [source, target]) {
+        for (const path of [sourceMountPath, targetMountPath]) {
           const mounted = await statPath(path, { bigint: true });
           if (!mounted.isFile() || !sameStatIdentity(pinned, mounted)) return false;
         }
-        const currentSourceMount = inspectReadOnlyMount(source, { spawn });
-        const currentTargetMount = inspectReadOnlyMount(target, { spawn });
+        const currentSourceMount = inspectReadOnlyMount(sourceMountPath, { spawn });
+        const currentTargetMount = inspectReadOnlyMount(targetMountPath, { spawn });
         if (currentSourceMount.id !== sourceMount.id || currentTargetMount.id !== targetMount.id) {
           return false;
         }
@@ -144,15 +165,29 @@ export async function mountLiveCredentialReadOnly(options) {
         }
         return true;
       },
-      cleanup() {
+      async cleanup() {
         if (cleaned) return;
         cleaned = true;
         const failures = [];
-        if (targetMounted) unmount(target, { root, spawn, failures });
-        if (sourceMounted) unmount(source, { root, spawn, failures });
+        if (targetMounted) unmount(targetMountPath, { root, spawn, failures });
+        if (sourceMounted) unmount(sourceMountPath, { root, spawn, failures });
         for (const parent of [...mountedParents].reverse()) {
           unmount(parent, { root, spawn, failures });
         }
+        const closeFailures = [];
+        try {
+          await sourceParentHandle?.close();
+        } catch (error) {
+          closeFailures.push(error?.message ?? "source parent close failed");
+        }
+        try {
+          await targetParentHandle?.close();
+        } catch (error) {
+          closeFailures.push(error?.message ?? "target parent close failed");
+        }
+        sourceParentHandle = undefined;
+        targetParentHandle = undefined;
+        failures.push(...closeFailures);
         if (failures.length > 0) {
           throw new Error(`credential mount cleanup failed: ${failures.join("; ")}`);
         }
@@ -160,8 +195,8 @@ export async function mountLiveCredentialReadOnly(options) {
     };
   } catch (error) {
     const cleanupFailures = [];
-    if (targetMounted) unmount(target, { root, spawn, failures: cleanupFailures });
-    if (sourceMounted) unmount(source, { root, spawn, failures: cleanupFailures });
+    if (targetMounted) unmount(targetMountPath, { root, spawn, failures: cleanupFailures });
+    if (sourceMounted) unmount(sourceMountPath, { root, spawn, failures: cleanupFailures });
     for (const parent of [...mountedParents].reverse()) {
       unmount(parent, { root, spawn, failures: cleanupFailures });
     }
@@ -174,6 +209,10 @@ export async function mountLiveCredentialReadOnly(options) {
     throw error;
   } finally {
     await handle?.close();
+    if (!parentHandlesTransferred) {
+      await sourceParentHandle?.close();
+      await targetParentHandle?.close();
+    }
   }
 }
 
@@ -231,7 +270,7 @@ export function inspectReadOnlyMount(path, options = {}) {
   const optionsList = String(entry?.["vfs-options"] ?? "").split(",");
   if (
     entry === undefined ||
-    resolve(entry.target) !== realpathSync(path) ||
+    ![resolve(path), realpathSync(path)].includes(resolve(entry.target)) ||
     !REQUIRED_VFS_OPTIONS.every((option) => optionsList.includes(option))
   ) {
     throw new Error(`credential mount lacks required read-only VFS flags: ${path}`);

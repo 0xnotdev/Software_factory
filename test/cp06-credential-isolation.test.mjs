@@ -39,7 +39,8 @@ test("live credential mount pins one inode behind distinct read-only regular mou
     }
     return { status: 0, stdout: "", stderr: "" };
   };
-  const lstatImpl = async (path, options) => (path === target ? sourceStat : lstat(path, options));
+  const lstatImpl = async (path, options) =>
+    String(path).endsWith("/auth.json") ? sourceStat : lstat(path, options);
   try {
     const mount = await mountLiveCredentialReadOnly({
       root,
@@ -52,48 +53,51 @@ test("live credential mount pins one inode behind distinct read-only regular mou
       assert.equal(await readFile(source, "utf8"), sourceBytes);
       assert.notEqual(mount.mountIds.source, mount.mountIds.target);
       const mountCallsOnly = calls.filter(([command]) => command === "mount");
-      assert.deepEqual(
-        mountCallsOnly.slice(0, 4),
-        [
-          ["mount", "--bind", root, root],
-          ["mount", "-o", "remount,bind,ro,nosuid,nodev,noexec", root],
-          ["mount", "--bind", join(root, "agent"), join(root, "agent")],
-          [
-            "mount",
-            "-o",
-            "remount,bind,ro,nosuid,nodev,noexec",
-            join(root, "agent"),
-          ],
-        ],
-      );
+      assert.match(mountCallsOnly[0][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+      assert.equal(mountCallsOnly[0][2], mountCallsOnly[0][3]);
+      assert.deepEqual(mountCallsOnly[1].slice(0, 3), [
+        "mount",
+        "-o",
+        "remount,bind,ro,nosuid,nodev,noexec",
+      ]);
+      assert.match(mountCallsOnly[2][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+      assert.equal(mountCallsOnly[2][2], mountCallsOnly[2][3]);
+      assert.deepEqual(mountCallsOnly[3].slice(0, 3), [
+        "mount",
+        "-o",
+        "remount,bind,ro,nosuid,nodev,noexec",
+      ]);
       assert.equal(mount.parentMounts.length, 2);
       assert.equal(await mount.verifyIntegrity(), true);
       assert.match(mountCallsOnly[4][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.deepEqual(mountCallsOnly[4].slice(0, 2), ["mount", "--bind"]);
-      assert.equal(mountCallsOnly[4][3], source);
-      assert.deepEqual(mountCallsOnly[5], [
+      assert.match(
+        mountCallsOnly[4][3],
+        new RegExp(`^/proc/${process.pid}/fd/\\d+/auth-source\\.json$`),
+      );
+      assert.deepEqual(mountCallsOnly[5].slice(0, 3), [
         "mount",
         "-o",
         "remount,bind,ro,nosuid,nodev,noexec",
-        source,
       ]);
+      assert.match(
+        mountCallsOnly[5][3],
+        new RegExp(`^/proc/${process.pid}/fd/\\d+/auth-source\\.json$`),
+      );
       assert.match(mountCallsOnly[6][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.equal(mountCallsOnly[6][3], target);
-      assert.deepEqual(mountCallsOnly[7], [
+      assert.match(mountCallsOnly[6][3], new RegExp(`^/proc/${process.pid}/fd/\\d+/auth\\.json$`));
+      assert.deepEqual(mountCallsOnly[7].slice(0, 3), [
         "mount",
         "-o",
         "remount,bind,ro,nosuid,nodev,noexec",
-        target,
       ]);
+      assert.match(mountCallsOnly[7][3], new RegExp(`^/proc/${process.pid}/fd/\\d+/auth\\.json$`));
     } finally {
-      mount.cleanup();
+      await mount.cleanup();
     }
-    assert.deepEqual(calls.slice(-4), [
-      ["umount", target],
-      ["umount", source],
-      ["umount", join(root, "agent")],
-      ["umount", root],
-    ]);
+    for (const [command, path] of calls.slice(-4)) {
+      assert.equal(command, "umount");
+      assert.match(path, new RegExp(`^/proc/${process.pid}/fd/\\d+`));
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

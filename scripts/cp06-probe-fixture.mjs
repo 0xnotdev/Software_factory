@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  rmSync,
+} from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
@@ -70,6 +79,54 @@ export function openProbeOutput({ root, outputRoot, create = false, runner = fal
   } finally {
     if (currentFd !== projectFd) closeSync(currentFd);
     closeSync(projectFd);
+  }
+}
+
+export function openAnchoredDirectory(
+  parentAnchor,
+  relativePath,
+  { create = true, reset = false } = {},
+) {
+  const components = String(relativePath)
+    .split("/")
+    .filter((component) => component.length > 0);
+  if (
+    components.length === 0 ||
+    components.some(
+      (component) => component === "." || component === ".." || component.includes("\0"),
+    )
+  ) {
+    throw new Error("DUMMY proof output child path is invalid");
+  }
+  if (reset) rmSync(join(parentAnchor, components[0]), { recursive: true, force: true });
+  let currentFd;
+  let currentAnchor = parentAnchor;
+  try {
+    for (const component of components) {
+      const path = join(currentAnchor, component);
+      if (create) {
+        try {
+          mkdirSync(path, { mode: 0o700 });
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+      }
+      const nextFd = openSync(path, directoryFlags);
+      if (currentFd !== undefined) closeSync(currentFd);
+      currentFd = nextFd;
+      currentAnchor = `/proc/${process.pid}/fd/${currentFd}`;
+    }
+    const outputFd = currentFd;
+    currentFd = undefined;
+    return {
+      anchor: `/proc/${process.pid}/fd/${outputFd}`,
+      identity: fstatSync(outputFd, { bigint: true }),
+      close() {
+        closeSync(outputFd);
+      },
+    };
+  } finally {
+    if (currentFd !== undefined) closeSync(currentFd);
   }
 }
 

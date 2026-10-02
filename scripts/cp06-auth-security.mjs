@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 import { openProbeOutput } from "./cp06-probe-fixture.mjs";
@@ -17,12 +17,13 @@ export async function runCp06SecurityPreflight(options = {}) {
   const root = resolve(options.root ?? process.cwd());
   const outputRoot = resolve(options.outputRoot ?? join(root, ".factory/state/cp06-auth-security"));
   const output = openProbeOutput({ root, outputRoot, create: true });
+  let binaries;
   try {
     const prerequisites = verifyIsolationPrerequisites({
       root,
       spawnSyncImpl: options.spawnSyncImpl,
     });
-    const binaries = compileIsolationHelpers({
+    binaries = compileIsolationHelpers({
       root,
       outputRoot,
       anchoredOutputRoot: output.anchor,
@@ -43,7 +44,7 @@ export async function runCp06SecurityPreflight(options = {}) {
     });
     assertHardenedProof(hardened);
     const sdk = runDummySdkProof({ root, helper: binaries.helper, piRoot: pi.root });
-    return {
+    const proof = {
       schema_version: 1,
       gate: "CP-06-read-only-auth-security",
       result: "pass",
@@ -63,7 +64,13 @@ export async function runCp06SecurityPreflight(options = {}) {
       hardened_child: summarizeHardened(hardened),
       dummy_sdk: sdk,
     };
+    if (options.retainBinaries === true) {
+      Object.defineProperty(proof, "retainedBinaries", { value: binaries });
+      binaries = undefined;
+    }
+    return proof;
   } finally {
+    binaries?.close?.();
     output.close();
   }
 }
@@ -137,7 +144,20 @@ export function compileIsolationHelpers(options) {
     ],
     root,
   );
-  return { helper, syscallProbe };
+  const helperFd = openSync(anchoredHelper, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const syscallProbeFd = openSync(anchoredSyscallProbe, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let closed = false;
+  return {
+    helper: `/proc/${process.pid}/fd/${helperFd}`,
+    syscallProbe: `/proc/${process.pid}/fd/${syscallProbeFd}`,
+    outputPaths: { helper, syscallProbe },
+    close() {
+      if (closed) return;
+      closed = true;
+      closeSync(helperFd);
+      closeSync(syscallProbeFd);
+    },
+  };
 }
 
 export async function runIsolatedWorker(options) {
@@ -157,6 +177,21 @@ export async function runIsolatedWorker(options) {
 }
 
 export function namespaceWorkerError(result) {
+  if (result.error?.code === "ETIMEDOUT") {
+    const error = new Error("CP-06 isolated SDK worker timed out");
+    error.code = "CP06_CHILD_TIMEOUT";
+    error.stage = "timeout";
+    error.exitCode = 70;
+    error.workerFailure = {
+      schema_version: 1,
+      stage: "timeout",
+      code: "CP06_CHILD_TIMEOUT",
+      exit_code: 70,
+      description: SUPERVISOR_FAILURE_DESCRIPTIONS.CP06_CHILD_TIMEOUT,
+      causes: [],
+    };
+    return error;
+  }
   const error = new Error(
     result.status === 73
       ? "CP-06 credential namespace setup is unsupported"
@@ -413,7 +448,170 @@ export function runDummySdkProof({ root, helper, piRoot, spawnSyncImpl = spawnSy
           : "CP06_DUMMY_SDK_CHILD_EXIT";
     throw unsupported(`DUMMY SDK proof failed: ${code}`);
   }
-  return parseCompactJson(result.stdout, "DUMMY SDK proof");
+  return validateDummySdkProof(parseCompactJson(result.stdout, "DUMMY SDK proof"));
+}
+
+function validateDummySdkProof(proof) {
+  assertExactKeys(proof, [
+    "actual_sdk_outcomes",
+    "auth_cases",
+    "fixture_origin",
+    "network_calls",
+    "result",
+    "schema_version",
+    "sdk_dependency",
+    "sdk_worker",
+    "semantic_acceptance",
+  ]);
+  assert(proof.schema_version === 1, "DUMMY SDK schema mismatch");
+  assert(proof.result === "pass", "DUMMY SDK proof did not pass");
+  assert(proof.fixture_origin === true, "DUMMY SDK fixture origin missing");
+  assert(proof.semantic_acceptance === false, "DUMMY SDK semantic acceptance was claimed");
+  assert(proof.network_calls === 0, "DUMMY SDK attempted network access");
+  validateAuthCases(proof.auth_cases);
+  validateSdkWorker(proof.sdk_worker);
+  validateSdkDependency(proof.sdk_dependency);
+  validateOutcomeProof(proof.actual_sdk_outcomes);
+  return proof;
+}
+
+function validateAuthCases(cases) {
+  assert(Array.isArray(cases) && cases.length === 3, "DUMMY SDK auth cases incomplete");
+  const expected = new Map([
+    ["expired", { result: "blocked", toAuth: 0 }],
+    ["near_expiry", { result: "blocked", toAuth: 0 }],
+    ["unexpired", { result: "resolved", toAuth: 1 }],
+  ]);
+  const seen = new Set();
+  for (const entry of cases) {
+    assertExactKeys(entry, [
+      "credential_store",
+      "persistence_operations",
+      "refresh_callbacks",
+      "result",
+      "scenario",
+      "source_unchanged",
+      "to_auth_calls",
+    ]);
+    const expectation = expected.get(entry.scenario);
+    assert(expectation !== undefined && !seen.has(entry.scenario), "DUMMY SDK auth case mismatch");
+    seen.add(entry.scenario);
+    assert(entry.result === expectation.result, "DUMMY SDK auth result mismatch");
+    assert(entry.refresh_callbacks === 0, "DUMMY SDK refresh callback ran");
+    assert(entry.to_auth_calls === expectation.toAuth, "DUMMY SDK toAuth count mismatch");
+    assert(entry.persistence_operations === 0, "DUMMY SDK persistence occurred");
+    assert(entry.source_unchanged === true, "DUMMY SDK auth source changed");
+    validateCredentialAudit(entry.credential_store);
+  }
+}
+
+function validateSdkWorker(worker) {
+  assertExactKeys(worker, [
+    "active_tools",
+    "credential_store",
+    "event_count",
+    "event_sha256",
+    "in_memory_session",
+    "read_audit",
+    "refresh_callbacks",
+  ]);
+  assert(
+    Array.isArray(worker.active_tools) && worker.active_tools.join(",") === "read",
+    "DUMMY SDK tools mismatch",
+  );
+  assert(worker.in_memory_session === true, "DUMMY SDK session was persisted");
+  assert(
+    Number.isSafeInteger(worker.event_count) && worker.event_count > 0,
+    "DUMMY SDK event count missing",
+  );
+  assert(isSha256(worker.event_sha256), "DUMMY SDK event digest missing");
+  assert(worker.refresh_callbacks === 0, "DUMMY SDK worker refresh callback ran");
+  validateCredentialAudit(worker.credential_store);
+  assert(worker.read_audit?.exact_original === true, "DUMMY SDK exact original read missing");
+  assert(worker.read_audit?.read_count === 1, "DUMMY SDK read count mismatch");
+}
+
+function validateSdkDependency(dependency) {
+  assert(
+    dependency !== null && typeof dependency === "object" && !Array.isArray(dependency),
+    "DUMMY SDK dependency missing",
+  );
+  assert(
+    typeof dependency.version === "string" && dependency.version.length > 0,
+    "DUMMY SDK dependency version missing",
+  );
+  assert(isSha256(dependency.package_sha256), "DUMMY SDK dependency digest missing");
+}
+
+function validateOutcomeProof(outcomes) {
+  assertExactKeys(outcomes, ["cases", "fixture_origin", "semantic_acceptance"]);
+  assert(outcomes.fixture_origin === true, "DUMMY outcome fixture origin missing");
+  assert(outcomes.semantic_acceptance === false, "DUMMY outcome semantic acceptance was claimed");
+  assert(Array.isArray(outcomes.cases), "DUMMY outcome cases missing");
+  const expected = new Map([
+    ["valid", 0],
+    ["fenced-valid", 0],
+    ["extra-before-fence", 75],
+    ["empty-gap", 75],
+    ["missing-gap", 75],
+    ["contradictory-gap", 75],
+    ["extra-evidence", 75],
+    ["constraint-pass", 75],
+    ["missing-reads", 75],
+    ["credential-read", 75],
+    ["symlink-read", 75],
+    ["expired", 75],
+    ["near-expiry", 75],
+    ["timeout", 70],
+  ]);
+  const seen = new Set();
+  for (const entry of outcomes.cases) {
+    assert(
+      entry !== null && typeof entry === "object" && !Array.isArray(entry),
+      "DUMMY outcome case malformed",
+    );
+    const expectedExit = expected.get(entry.scenario);
+    assert(
+      expectedExit !== undefined && !seen.has(entry.scenario),
+      "DUMMY outcome scenario mismatch",
+    );
+    seen.add(entry.scenario);
+    assert(
+      entry.exit_code === expectedExit && entry.expected_exit_code === expectedExit,
+      "DUMMY outcome exit mismatch",
+    );
+    assert(entry.source_unchanged === true, "DUMMY outcome source changed");
+    assert(
+      entry.default_storage === 0 && entry.network === 0 && entry.refresh === 0,
+      "DUMMY outcome side effect occurred",
+    );
+    if (["expired", "near-expiry"].includes(entry.scenario)) {
+      assert(entry.runtime_create === 0, "DUMMY expired auth reached runtime creation");
+    }
+  }
+  assert(seen.size === expected.size, "DUMMY outcome cases incomplete");
+}
+
+function validateCredentialAudit(audit) {
+  assertExactKeys(audit, ["delete_denials", "lists", "modify_denials", "reads"]);
+  for (const key of ["delete_denials", "lists", "modify_denials", "reads"]) {
+    assert(Number.isSafeInteger(audit[key]) && audit[key] >= 0, "DUMMY credential audit malformed");
+  }
+}
+
+function assertExactKeys(value, keys) {
+  assert(
+    value !== null && typeof value === "object" && !Array.isArray(value),
+    "DUMMY SDK proof object malformed",
+  );
+  assert(
+    Object.keys(value).sort().join(",") === keys.slice().sort().join(","),
+    "DUMMY SDK proof keys mismatch",
+  );
+}
+
+function isSha256(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
 function resolvePiPackage(root, options) {

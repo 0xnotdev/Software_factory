@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { realpathSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
 const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
-const rawRoot = join(output.anchor, "p07", "raw");
-await rm(join(output.anchor, "p07"), { recursive: true, force: true });
-await mkdir(rawRoot, { recursive: true });
+const p07Root = openAnchoredDirectory(output.anchor, "p07", { reset: true });
+const rawDirectory = openAnchoredDirectory(p07Root.anchor, "raw");
+const rawRoot = rawDirectory.anchor;
 
 const steps = [];
 steps.push(run("build", "npm", ["run", "build"], 0));
@@ -67,7 +67,7 @@ const manifest = {
     "The historical module is a minimal retained reproduction, not a raw worker transcript.",
   ],
 };
-const manifestPath = join(output.anchor, "p07", "evidence.json");
+const manifestPath = join(p07Root.anchor, "evidence.json");
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(
   JSON.stringify({
@@ -123,9 +123,10 @@ function quote(parts) {
 }
 
 function relative(path) {
-  const located = path.startsWith(`${output.anchor}/`)
-    ? join(outputRoot, path.slice(output.anchor.length + 1))
-    : path;
+  let located = path;
+  try {
+    located = realpathSync(path);
+  } catch {}
   return located.startsWith(`${root}/`) ? located.slice(root.length + 1) : located;
 }
 
