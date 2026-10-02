@@ -8,14 +8,13 @@ import { pathToFileURL } from "node:url";
 import { Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { proveDummyWorkerOutcome } from "./cp06-dummy-outcome-proof.mjs";
+import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
 
 const [piRootArg] = process.argv.slice(2);
 if (!piRootArg) process.exit(64);
 const piRoot = resolve(piRootArg);
 const sdk = await import(pathToFileURL(join(piRoot, "dist/index.js")));
-const ai = await import(
-  pathToFileURL(join(piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"))
-);
+const { module: ai, provenance: piAi } = await importPinnedPiAi(piRoot);
 const originalFetch = globalThis.fetch;
 let networkCalls = 0;
 globalThis.fetch = async () => {
@@ -41,6 +40,7 @@ try {
       result: "pass",
       auth_cases: authCases,
       sdk_worker: worker,
+      sdk_dependency: piAi,
       actual_sdk_outcomes: outcomeProof,
       fixture_origin: true,
       semantic_acceptance: false,

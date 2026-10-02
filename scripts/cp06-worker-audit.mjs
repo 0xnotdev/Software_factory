@@ -71,11 +71,11 @@ export function auditReadEvents(events, options) {
   if (typeof callId !== "string" || callId.length === 0) {
     return reject("original read start omitted toolCallId");
   }
-  if (start.event.args?.offset !== undefined) {
-    return reject("original read used an explicit offset");
-  }
-  if (start.event.args?.limit !== undefined) {
-    return reject("original read used an explicit limit");
+  const offset = start.event.args?.offset;
+  const limit = start.event.args?.limit;
+  const usesExplicitRange = offset !== undefined || limit !== undefined;
+  if (usesExplicitRange && (offset !== 1 || !Number.isSafeInteger(limit) || limit < 1)) {
+    return reject("original read used a range other than offset 1 with an explicit limit");
   }
 
   const matchingEnds = readEnds.filter(({ event }) => event.toolCallId === callId);

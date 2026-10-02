@@ -27,7 +27,7 @@ export async function superviseCredentialChild(options, dependencies = {}) {
   const spawn = dependencies.spawn ?? spawnSync;
   const beforeHash = sha256(readFileSync(source));
   let mount;
-  const childResult = await withCleanup(
+  return await withCleanup(
     async () => {
       try {
         mount = await mountCredential({ root, source, target });
@@ -64,29 +64,28 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           result.status ?? 70,
         );
       }
-      return result;
+
+      const afterHash = sha256(readFileSync(source));
+      if (mode === "worker" && beforeHash !== afterHash) {
+        throw failure("CP-06 credential source changed during worker execution", 74);
+      }
+      let childEvidence;
+      try {
+        childEvidence = JSON.parse(String(result.stdout).trim());
+      } catch {
+        throw failure("CP-06 isolated child returned non-compact output", 70);
+      }
+      return {
+        schema_version: 1,
+        mode,
+        source_unchanged: beforeHash === afterHash,
+        mount_ids_distinct: mount.mountIds.source !== mount.mountIds.target,
+        cleanup: "pass",
+        child: childEvidence,
+      };
     },
     () => mount?.cleanup(),
   );
-
-  const afterHash = sha256(readFileSync(source));
-  if (mode === "worker" && beforeHash !== afterHash) {
-    throw failure("CP-06 credential source changed during worker execution", 74);
-  }
-  let childEvidence;
-  try {
-    childEvidence = JSON.parse(String(childResult.stdout).trim());
-  } catch {
-    throw failure("CP-06 isolated child returned non-compact output", 70);
-  }
-  return {
-    schema_version: 1,
-    mode,
-    source_unchanged: beforeHash === afterHash,
-    mount_ids_distinct: mount.mountIds.source !== mount.mountIds.target,
-    cleanup: "pass",
-    child: childEvidence,
-  };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -98,21 +97,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       ),
     );
   } catch (error) {
-    process.stderr.write(
-      `${JSON.stringify({
-        schema_version: 1,
-        code: error.code ?? "CP06_WORKER_FAILED",
-        exit_code: error.exitCode ?? 70,
-        message: safeError(error),
-        causes:
-          error instanceof AggregateError
-            ? error.errors.map((cause) => ({
-                code: cause?.code ?? "CP06_WORKER_FAILED",
-                exit_code: cause?.exitCode ?? null,
-              }))
-            : [],
-      })}\n`,
-    );
+    process.stderr.write(`${JSON.stringify(supervisorFailureRecord(error))}\n`);
     process.exitCode = error.exitCode ?? 70;
   }
 }
@@ -183,6 +168,22 @@ function childEnvironment(childMode, credentialTarget) {
     }
   }
   return environment;
+}
+
+export function supervisorFailureRecord(error) {
+  return {
+    schema_version: 1,
+    code: error?.code ?? "CP06_WORKER_FAILED",
+    exit_code: error?.exitCode ?? 70,
+    message: safeError(error),
+    causes:
+      error instanceof AggregateError
+        ? error.errors.map((cause) => ({
+            code: cause?.code ?? "CP06_WORKER_FAILED",
+            exit_code: cause?.exitCode ?? null,
+          }))
+        : [],
+  };
 }
 
 function failure(message, exitCode, cause) {

@@ -26,11 +26,13 @@ const timeoutMs = 600_000;
 const systemPrompt =
   "You are a bounded CP-06 reviewer. Use exactly the read tool, read only the supplied exact original once, return only the requested JSON, and do not attempt any file mutation or broad scan.";
 
-try {
-  await main();
-} catch (error) {
-  process.stderr.write(`${error.code ?? "CP06_WORKER_FAILED"}: ${error.message}\n`);
-  process.exitCode = error.exitCode ?? (error instanceof Cp06IsolationUnsupportedError ? 73 : 1);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    process.stderr.write(`${error.code ?? "CP06_WORKER_FAILED"}: ${error.message}\n`);
+    process.exitCode = error.exitCode ?? (error instanceof Cp06IsolationUnsupportedError ? 73 : 1);
+  }
 }
 
 async function main() {
@@ -175,7 +177,12 @@ async function main() {
 }
 
 async function recordBlocked(error, stage) {
-  const status = {
+  const status = createWorkerBlockedStatus(error, stage);
+  await writeFile(join(workerRoot, "blocked.json"), `${JSON.stringify(status, null, 2)}\n`);
+}
+
+export function createWorkerBlockedStatus(error, stage, recordedAt = new Date().toISOString()) {
+  return {
     schema_version: 1,
     gate: "P-06-fresh-worker",
     result: "blocked",
@@ -190,10 +197,9 @@ async function recordBlocked(error, stage) {
             exit_code: cause?.exitCode ?? null,
           }))
         : [],
-    recorded_at: new Date().toISOString(),
+    recorded_at: recordedAt,
     raw_transcript_retained: false,
   };
-  await writeFile(join(workerRoot, "blocked.json"), `${JSON.stringify(status, null, 2)}\n`);
 }
 
 function textCommand(command, args) {

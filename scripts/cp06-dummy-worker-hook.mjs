@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
 
 const piRoot = process.env.CP06_DUMMY_PI_ROOT;
 const countersPath = process.env.CP06_DUMMY_COUNTERS;
@@ -9,12 +10,11 @@ const scenario = process.env.CP06_DUMMY_SCENARIO;
 if (!piRoot || !countersPath || !scenario) throw new Error("DUMMY proof configuration missing");
 const sdk = await import(pathToFileURL(join(piRoot, "dist/index.js")));
 const { AuthStorage } = await import(pathToFileURL(join(piRoot, "dist/core/auth-storage.js")));
-const ai = await import(
-  pathToFileURL(join(piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"))
-);
+const { module: ai, provenance: piAi } = await importPinnedPiAi(piRoot);
 const input = JSON.parse(readFileSync(process.argv[3], "utf8"));
 const counts = {
   fixture_origin: true,
+  sdk_dependency: piAi,
   default_storage: 0,
   network: 0,
   refresh: 0,

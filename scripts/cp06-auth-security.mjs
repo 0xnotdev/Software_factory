@@ -137,31 +137,33 @@ export async function runIsolatedWorker(options) {
     timeout: options.timeout ?? 660_000,
     environment: options.environment,
   });
-  if (result.status !== 0) {
-    const error = new Error(
-      result.status === 73
-        ? "CP-06 credential namespace setup is unsupported"
-        : `CP-06 isolated SDK worker exited ${result.status ?? "without status"}`,
-    );
-    error.code = result.status === 73 ? "CP06_ISOLATION_UNSUPPORTED" : "CP06_WORKER_FAILED";
-    error.exitCode = result.status ?? 70;
-    error.stderr = result.stderr;
-    // Preserve the supervisor's compact failure identity, including both causes
-    // when child execution and mount cleanup fail. Do not persist raw stderr.
-    try {
-      const failure = JSON.parse(String(result.stderr).trim());
-      if (failure.schema_version === 1 && failure.exit_code === result.status) {
-        error.workerFailure = {
-          code: failure.code,
-          exit_code: failure.exit_code,
-          causes: failure.causes,
-        };
-        if (failure.code === "CP06_CLEANUP_FAILED") error.code = failure.code;
-      }
-    } catch {}
-    throw error;
-  }
+  if (result.status !== 0) throw namespaceWorkerError(result);
   return parseCompactJson(result.stdout, "isolated SDK worker");
+}
+
+export function namespaceWorkerError(result) {
+  const error = new Error(
+    result.status === 73
+      ? "CP-06 credential namespace setup is unsupported"
+      : `CP-06 isolated SDK worker exited ${result.status ?? "without status"}`,
+  );
+  error.code = result.status === 73 ? "CP06_ISOLATION_UNSUPPORTED" : "CP06_WORKER_FAILED";
+  error.exitCode = result.status ?? 70;
+  error.stderr = result.stderr;
+  // Preserve the supervisor's compact failure identity, including both causes
+  // when child execution or audit and mount cleanup fail. Do not persist raw stderr.
+  try {
+    const failure = JSON.parse(String(result.stderr).trim());
+    if (failure.schema_version === 1 && failure.exit_code === result.status) {
+      error.workerFailure = {
+        code: failure.code,
+        exit_code: failure.exit_code,
+        causes: failure.causes,
+      };
+      if (failure.code === "CP06_CLEANUP_FAILED") error.code = failure.code;
+    }
+  } catch {}
+  return error;
 }
 
 async function runIsolationProbe({ root, outputRoot, mode, binaries }) {
@@ -302,6 +304,7 @@ function runDummySdkProof({ root, helper, piRoot }) {
       "--",
       helper,
       process.execPath,
+      "--experimental-import-meta-resolve",
       join(root, "scripts/cp06-dummy-sdk-proof.mjs"),
       piRoot,
     ],

@@ -71,6 +71,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         const result = spawnSync(
           process.execPath,
           [
+            "--experimental-import-meta-resolve",
             "--import",
             join(root, "scripts/cp06-dummy-worker-hook.mjs"),
             join(root, "scripts/cp06-sdk-worker.mjs"),
