@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { verifyPinnedPackage } from "./cp06-package-integrity.mjs";
 
 const packageName = "@earendil-works/pi-ai";
 const supportedVersion = "0.85.1";
 
 /** Resolve Pi's import-only pi-ai dependency from the explicitly selected Pi package. */
-export async function importPinnedPiAi(piRootArg) {
+export function resolvePinnedPiAi(piRootArg) {
   const piRoot = realpathSync(resolve(piRootArg));
   const piMetadataPath = join(piRoot, "package.json");
   const piMetadata = JSON.parse(readFileSync(piMetadataPath, "utf8"));
@@ -39,9 +40,11 @@ export async function importPinnedPiAi(piRootArg) {
     throw new Error("resolved pi-ai dependency is outside the selected Pi installation");
   }
 
+  const integrity = verifyPinnedPackage(dependencyRoot, packageName);
   return {
-    module: await import(entryUrl),
+    entryUrl,
     provenance: {
+      ...integrity,
       name: dependencyMetadata.name,
       version: dependencyMetadata.version,
       root: dependencyRoot,
@@ -51,6 +54,11 @@ export async function importPinnedPiAi(piRootArg) {
       entry_sha256: sha256(readFileSync(entry)),
     },
   };
+}
+
+export async function importPinnedPiAi(piRootArg) {
+  const selected = resolvePinnedPiAi(piRootArg);
+  return { module: await import(selected.entryUrl), provenance: selected.provenance };
 }
 
 function findPackageRoot(entry, expectedName) {

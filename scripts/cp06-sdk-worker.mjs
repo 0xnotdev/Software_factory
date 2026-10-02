@@ -237,12 +237,12 @@ function finalAssistantText(events) {
 }
 
 function parseResponse(output) {
+  const trimmed = output.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/);
   try {
-    return JSON.parse(output.trim());
+    return JSON.parse(fenced ? fenced[1] : trimmed);
   } catch {
-    const fenced = output.trim().match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced === null) throw blocked("SDK worker did not return the required JSON response");
-    return JSON.parse(fenced[1]);
+    throw blocked("SDK worker did not return the required JSON response");
   }
 }
 

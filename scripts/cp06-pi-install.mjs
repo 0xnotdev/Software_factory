@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { verifyPinnedPackage } from "./cp06-package-integrity.mjs";
+import { resolvePinnedPiAi } from "./cp06-pi-dependency.mjs";
 
 const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const SUPPORTED_VERSION = "0.85.1";
@@ -45,6 +47,8 @@ export function resolvePinnedPiInstall(options) {
     throw new Error("selected task-local Pi package is unsupported");
   }
 
+  const packageIntegrity = verifyPinnedPackage(packageRoot, PACKAGE_NAME);
+  const piAi = resolvePinnedPiAi(packageRoot);
   const spawn = options.spawnSyncImpl ?? spawnSync;
   const version = spawn(expectedExecutable, ["--version"], {
     cwd: projectRoot,
@@ -67,6 +71,8 @@ export function resolvePinnedPiInstall(options) {
     provenance: {
       install_root: selectedRoot,
       package_root: packageRoot,
+      package_artifact: packageIntegrity,
+      dependency: piAi.provenance,
       executable: expectedExecutable,
       executable_entry: executableEntry,
       sdk_entry: sdkEntry,

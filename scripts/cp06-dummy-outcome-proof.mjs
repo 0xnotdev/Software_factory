@@ -32,6 +32,8 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
       const cases = [];
       for (const [scenario, expectedExit] of [
         ["valid", 0],
+        ["fenced-valid", 0],
+        ["extra-before-fence", 75],
         ["empty-gap", 75],
         ["missing-gap", 75],
         ["contradictory-gap", 75],
@@ -131,7 +133,11 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
           assert.equal(result.stderr.includes("DUMMY-ACCESS"), false);
         }
         if (scenario === "timeout") assert.match(result.stderr, /worker timed out and was aborted/);
-        const output = scenario === "valid" ? JSON.parse(result.stdout) : undefined;
+        if (scenario === "extra-before-fence")
+          assert.match(result.stderr, /SDK worker did not return the required JSON response/);
+        const output = ["valid", "fenced-valid"].includes(scenario)
+          ? JSON.parse(result.stdout)
+          : undefined;
         if (output) {
           assert.equal(output.result, "pass");
           assert.equal(output.event_stream.read_audit.exact_original, true);

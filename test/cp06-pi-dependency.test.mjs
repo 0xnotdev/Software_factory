@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -36,7 +37,7 @@ test("Pi selection requires the explicit task-local package and executable paths
     await chmod(entry, 0o755);
     await symlink("../@earendil-works/pi-coding-agent/dist/cli.js", bin);
     const invocations = [];
-    const selected = resolvePinnedPiInstall({
+    assert.throws(() => resolvePinnedPiInstall({
       projectRoot,
       packageRoot,
       executable: bin,
@@ -44,13 +45,8 @@ test("Pi selection requires the explicit task-local package and executable paths
         invocations.push([command, ...args]);
         return { status: 0, stdout: "0.85.1\n", stderr: "" };
       },
-    });
-    assert.equal(selected.root, packageRoot);
-    assert.equal(selected.executable, bin);
-    assert.deepEqual(invocations, [[bin, "--version"]]);
-    assert.match(selected.provenance.package_sha256, /^[a-f0-9]{64}$/);
-    assert.match(selected.provenance.executable_sha256, /^[a-f0-9]{64}$/);
-    assert.match(selected.provenance.sdk_entry_sha256, /^[a-f0-9]{64}$/);
+    }), /pinned artifact/);
+    assert.deepEqual(invocations, []);
 
     for (const substitution of [
       { packageRoot: undefined, executable: bin },
@@ -67,8 +63,48 @@ test("Pi selection requires the explicit task-local package and executable paths
   }
 });
 
+test("exact artifact succeeds and same-version selected entry substitutions fail before SDK use", async (t) => {
+  const installed = resolve(".factory/state/cp06-sdk/node_modules/@earendil-works");
+  if (!existsSync(join(installed, "pi-ai"))) return t.skip("task-local CP-06 SDK is not installed");
+  const projectRoot = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-pinned-artifact-"));
+  const selected = join(projectRoot, ".factory/state/cp06-sdk/node_modules");
+  const packages = join(selected, "@earendil-works");
+  const packageRoot = join(packages, "pi-coding-agent");
+  const executable = join(selected, ".bin/pi");
+  try {
+    await mkdir(packages, { recursive: true });
+    await mkdir(join(selected, ".bin"));
+    for (const name of ["pi-coding-agent", "pi-ai"]) {
+      await cp(join(installed, name), join(packages, name), { recursive: true });
+    }
+    const binPath = JSON.parse(await readFile(join(packageRoot, "package.json"))).bin;
+    await symlink(join(packageRoot, typeof binPath === "string" ? binPath : binPath.pi), executable);
+    let launches = 0;
+    const options = {
+      projectRoot, packageRoot, executable,
+      spawnSyncImpl() { launches++; return { status: 0, stdout: "0.85.1\n" }; },
+    };
+    const positive = resolvePinnedPiInstall(options);
+    assert.equal(positive.provenance.dependency.version, "0.85.1");
+    assert.match(positive.provenance.package_artifact.manifest_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(launches, 1);
+    const entry = join(packageRoot, "dist/index.js");
+    const original = await readFile(entry);
+    await writeFile(entry, "DUMMY same-version SDK replacement");
+    assert.throws(() => resolvePinnedPiInstall(options), /pinned artifact/);
+    assert.equal(launches, 1);
+    await writeFile(entry, original);
+    const aiEntry = join(packages, "pi-ai/dist/index.js");
+    await writeFile(aiEntry, "DUMMY same-version dependency replacement");
+    assert.throws(() => resolvePinnedPiInstall(options), /pinned artifact/);
+    assert.equal(launches, 1);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of [
-  { name: "exact hoisted import-only dependency", version: "0.85.1", expectedExit: 0 },
+  { name: "substituted same-version import-only dependency", version: "0.85.1", expectedExit: 1 },
   { name: "newer hoisted import-only dependency", version: "0.99.2", expectedExit: 1 },
 ]) {
   test(`pinned Pi dependency resolver handles ${scenario.name}`, async () => {
@@ -118,7 +154,7 @@ for (const scenario of [
         assert.match(output.provenance.package_sha256, /^[a-f0-9]{64}$/);
         assert.match(output.provenance.entry_sha256, /^[a-f0-9]{64}$/);
       } else {
-        assert.match(result.stderr, /not exact version 0\.85\.1/);
+        assert.match(result.stderr, scenario.version === "0.85.1" ? /pinned artifact/ : /not exact version 0\.85\.1/);
       }
     } finally {
       await rm(directory, { recursive: true, force: true });

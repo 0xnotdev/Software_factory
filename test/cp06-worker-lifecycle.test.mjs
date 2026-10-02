@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -179,6 +180,42 @@ for (const scenario of [
     }
   });
 }
+
+test("unsafe mode accepts only disposable DUMMY control and records observed mutation", async () => {
+  const base = join(process.cwd(), ".factory/state/cp06-auth-security");
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(join(base, "DUMMY-unsafe-probe-test-"));
+  const source = join(directory, "source/DUMMY-auth.json");
+  const target = join(directory, "agent/DUMMY-auth.json");
+  let launched = 0;
+  try {
+    await mkdir(join(directory, "source"));
+    await writeFile(source, "DUMMY original");
+    const options = { mode: "unsafe-probe", source, target, helper: "/DUMMY-helper", syscallProbe: "/DUMMY-probe" };
+    await assert.rejects(
+      superviseCredentialChild({ ...options, source: join(directory, "source/not-allowed") }, {
+        mount() { launched++; },
+      }),
+      { code: "CP06_ISOLATION_SETUP_FAILED" },
+    );
+    assert.equal(launched, 0);
+    const result = await superviseCredentialChild(options, {
+      mount() {
+        return { mountIds: { source: "1", target: "2" }, parentMounts: [], cleanup() {} };
+      },
+      spawn() {
+        launched++;
+        writeFileSync(source, "DUMMY mutated");
+        return { status: 0, stdout: '{"result":"DUMMY"}' };
+      },
+    });
+    assert.equal(result.source_unchanged, false);
+    assert.equal(result.mode, "unsafe-probe");
+    assert.equal(launched, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("worker source integrity uses metadata without reading credential bytes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-metadata-"));

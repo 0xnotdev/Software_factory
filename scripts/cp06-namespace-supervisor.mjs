@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mountLiveCredentialReadOnly } from "./cp06-credential-isolation.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
@@ -20,6 +20,9 @@ export async function superviseCredentialChild(options, dependencies = {}) {
     )
   )
     throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 64);
+  if (mode === "unsafe-probe" && !isDisposableUnsafeControl(source, target)) {
+    throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 64);
+  }
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73);
   }
@@ -99,7 +102,7 @@ export async function superviseCredentialChild(options, dependencies = {}) {
       } catch {
         sourceUnchanged = false;
       }
-      if (!sourceUnchanged) {
+      if (!sourceUnchanged && mode !== "unsafe-probe") {
         throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74);
       }
       let childEvidence;
@@ -136,6 +139,22 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
 }
 
+function isDisposableUnsafeControl(source, target) {
+  const base = join(root, ".factory/state/cp06-auth-security");
+  const candidate = dirname(dirname(resolve(source)));
+  const name = relative(base, candidate);
+  if (!/^DUMMY-unsafe-probe-[^/]+$/.test(name)) return false;
+  if (resolve(source) !== join(candidate, "source/DUMMY-auth.json")) return false;
+  if (resolve(target) !== join(candidate, "agent/DUMMY-auth.json")) return false;
+  try {
+    return realpathSync(source) === resolve(source) &&
+      realpathSync(candidate) === candidate &&
+      (!existsSync(dirname(target)) || realpathSync(dirname(target)) === dirname(target));
+  } catch {
+    return false;
+  }
+}
+
 function childCommand({ mode, source, target, helper, syscallProbe, childArgs, beforeHash }) {
   if (mode === "unsafe-probe") {
     return {
@@ -163,7 +182,13 @@ function childCommand({ mode, source, target, helper, syscallProbe, childArgs, b
           beforeHash,
           String(process.pid),
         ]
-      : [process.execPath, resolve(root, "scripts/cp06-sdk-worker.mjs"), target, ...childArgs];
+      : [
+          process.execPath,
+          "--experimental-import-meta-resolve",
+          resolve(root, "scripts/cp06-sdk-worker.mjs"),
+          target,
+          ...childArgs,
+        ];
   return {
     command: "setpriv",
     args: [

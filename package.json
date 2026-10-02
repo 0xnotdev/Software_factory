@@ -9,14 +9,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"dist/test/**/*.test.js\" \"test/**/*.test.mjs\"",
+    "test": "npm run build && node --experimental-import-meta-resolve --test \"dist/test/**/*.test.js\" \"test/**/*.test.mjs\"",
     "format": "prettier --write \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "format:check": "prettier --check \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "lint": "node scripts/lint.mjs",
     "proof:cp06:ten-pack": "npm run build && node scripts/replay-cp06-ten-pack.mjs",
     "proof:cp06:p07": "node scripts/replay-cp06-p07.mjs",
-    "proof:cp06:auth-security": "node scripts/prove-cp06-auth-security.mjs",
-    "proof:cp06:worker": "node scripts/replay-cp06-worker.mjs",
+    "proof:cp06:auth-security": "node --experimental-import-meta-resolve scripts/prove-cp06-auth-security.mjs",
+    "proof:cp06:worker": "node --experimental-import-meta-resolve scripts/replay-cp06-worker.mjs",
     "proof:cp06:worker-cleanup": "node scripts/prove-cp06-worker-cleanup.mjs",
     "factory": "node dist/src/cli.js"
   },

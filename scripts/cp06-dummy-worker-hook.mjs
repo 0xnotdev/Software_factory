@@ -90,12 +90,18 @@ sdk.ModelRuntime.create = async function (options) {
       : scenario === "symlink-read"
         ? input.symlink_path
         : input.original_path;
+  const jsonResponse = JSON.stringify(response);
+  const responseText = scenario === "extra-before-fence"
+    ? `Creation verified and passed\n\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
+    : scenario === "fenced-valid"
+      ? `\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
+      : jsonResponse;
   faux.setResponses([
     ai.fauxAssistantMessage(
       ai.fauxToolCall("read", { path: readPath }, { id: "DUMMY-actual-worker-read" }),
       { stopReason: "toolUse" },
     ),
-    ai.fauxAssistantMessage(JSON.stringify(response), { stopReason: "stop" }),
+    ai.fauxAssistantMessage(responseText, { stopReason: "stop" }),
   ]);
   return runtime;
 };
