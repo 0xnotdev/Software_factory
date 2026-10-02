@@ -183,8 +183,14 @@ export function namespaceWorkerError(result) {
   return error;
 }
 
-async function runIsolationProbe({ root, outputRoot, mode, binaries }) {
-  const result = runNamespace({
+export async function runIsolationProbe({
+  root,
+  outputRoot,
+  mode,
+  binaries,
+  runNamespaceImpl = runNamespace,
+}) {
+  const result = runNamespaceImpl({
     root,
     mode,
     source: outputRoot,
@@ -194,8 +200,11 @@ async function runIsolationProbe({ root, outputRoot, mode, binaries }) {
     childArgs: [],
     timeout: 90_000,
   });
-  if (result.status !== 0) {
-    throw unsupported(`${mode} failed: ${String(result.stderr).trim() || result.status}`);
+  if (result.error !== undefined || result.status !== 0) {
+    const failure = namespaceWorkerError(result);
+    const error = unsupported(`${mode} failed: ${failure.code}`);
+    error.workerFailure = failure.workerFailure;
+    throw error;
   }
   return parseCompactJson(result.stdout, mode);
 }
@@ -358,8 +367,8 @@ function assertHardenedProof(proof) {
   }
 }
 
-function runDummySdkProof({ root, helper, piRoot }) {
-  const result = spawnSync(
+export function runDummySdkProof({ root, helper, piRoot, spawnSyncImpl = spawnSync }) {
+  const result = spawnSyncImpl(
     "unshare",
     [
       "--user",
@@ -396,7 +405,13 @@ function runDummySdkProof({ root, helper, piRoot }) {
     },
   );
   if (result.error !== undefined || result.status !== 0) {
-    throw unsupported(`DUMMY SDK proof failed: ${result.error?.message ?? result.stderr}`);
+    const code =
+      result.error?.code === "ETIMEDOUT"
+        ? "CP06_DUMMY_SDK_TIMEOUT"
+        : result.error !== undefined
+          ? "CP06_DUMMY_SDK_LAUNCH_FAILED"
+          : "CP06_DUMMY_SDK_CHILD_EXIT";
+    throw unsupported(`DUMMY SDK proof failed: ${code}`);
   }
   return parseCompactJson(result.stdout, "DUMMY SDK proof");
 }

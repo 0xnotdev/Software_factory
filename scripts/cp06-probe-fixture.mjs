@@ -7,7 +7,7 @@ import { join, relative, resolve } from "node:path";
 const original = Buffer.from("DUMMY ORIGINAL");
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 
-export function openProbeOutput({ root, outputRoot, create = false }) {
+export function openProbeOutput({ root, outputRoot, create = false, runner = false }) {
   const state = resolve(root, ".factory/state");
   const selected = resolve(outputRoot);
   const subpath = relative(state, selected);
@@ -16,7 +16,9 @@ export function openProbeOutput({ root, outputRoot, create = false }) {
     subpath === "" ||
     subpath === ".." ||
     subpath.startsWith("../") ||
-    !(subpath === "cp06-auth-security" || subpath.split("/").includes("auth-security"))
+    !(runner
+      ? subpath === "cp06-correction" || subpath.startsWith("cp06-correction/")
+      : subpath === "cp06-auth-security" || subpath.split("/").includes("auth-security"))
   )
     throw new Error("DUMMY proof root is outside task-local auth-security state");
 

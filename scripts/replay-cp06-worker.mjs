@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
+import { openProbeOutput } from "./cp06-probe-fixture.mjs";
 import {
   Cp06IsolationUnsupportedError,
   runCp06SecurityPreflight,
@@ -14,7 +15,8 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
-const workerRoot = join(outputRoot, "worker");
+const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+const workerRoot = join(output.anchor, "worker");
 const securityRoot = join(outputRoot, "auth-security");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
 const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-worker-missing.pack.md");
@@ -65,8 +67,8 @@ async function main() {
     timeout_ms: timeoutMs,
     system_prompt: systemPrompt,
   };
-  const inputPath = join(workerRoot, "input.json");
-  await writeFile(inputPath, `${JSON.stringify(workerInput, null, 2)}\n`);
+  const inputPath = join(outputRoot, "worker", "input.json");
+  await writeFile(join(workerRoot, "input.json"), `${JSON.stringify(workerInput, null, 2)}\n`);
   const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-sdk-worker-"));
   const credentialTarget = join(evaluationHome, "pi-agent", "auth.json");
   const credentialSource = resolve(
@@ -198,8 +200,7 @@ export function createWorkerBlockedStatus(error, stage, recordedAt = new Date().
     failure_stage: error?.stage ?? null,
     code: error?.code ?? "CP06_WORKER_FAILED",
     cleanup_failed:
-      error?.code === "CP06_CLEANUP_FAILED" ||
-      nestedWorkerFailure?.code === "CP06_CLEANUP_FAILED",
+      error?.code === "CP06_CLEANUP_FAILED" || nestedWorkerFailure?.code === "CP06_CLEANUP_FAILED",
     worker_failure: nestedWorkerFailure ?? null,
     causes:
       error instanceof AggregateError
@@ -221,7 +222,10 @@ function textCommand(command, args) {
 }
 
 function relative(path) {
-  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+  const located = path.startsWith(`${output.anchor}/`)
+    ? join(outputRoot, path.slice(output.anchor.length + 1))
+    : path;
+  return located.startsWith(`${root}/`) ? located.slice(root.length + 1) : located;
 }
 
 async function fileHash(path) {

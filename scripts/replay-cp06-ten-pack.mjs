@@ -5,11 +5,13 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { openProbeOutput } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureSource = join(root, "test/fixtures/cp06-context");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
-const proofRoot = join(outputRoot, "ten-pack");
+const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+const proofRoot = join(output.anchor, "ten-pack");
 const fixtureRoot = join(proofRoot, "repo");
 const rawRoot = join(proofRoot, "raw");
 const cli = join(root, "dist/src/cli.js");
@@ -678,7 +680,10 @@ function quote(parts) {
 }
 
 function relative(path) {
-  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+  const located = path.startsWith(`${output.anchor}/`)
+    ? join(outputRoot, path.slice(output.anchor.length + 1))
+    : path;
+  return located.startsWith(`${root}/`) ? located.slice(root.length + 1) : located;
 }
 
 function slug(path) {
