@@ -17,6 +17,7 @@ const gap = {
 const response = {
   status: "MISSING_SOURCE",
   missing_source: "docs/AUTH.md",
+  reads: [options.expectedOriginalPath],
   broad_scan: false,
   corrected_constraints: [
     "Ownership comes only from the authenticated principal; request-supplied owner fields are ignored.",
@@ -64,7 +65,22 @@ test("creation evidence cannot replace source recovery or relax the read outcome
     { missing_source: "./docs/AUTH.md" },
     { missing_source: resolve(root, "test/fixtures/cp06-context/docs/AUTH.md") },
     { broad_scan: true },
+    { reads: [] },
+    { reads: [resolve(root, "PROJECT.md")] },
     { corrected_constraints: [] },
+    {
+      corrected_constraints: [
+        ...response.corrected_constraints,
+        "creation behavior was independently verified",
+      ],
+    },
+    {
+      corrected_constraints: [
+        `${response.corrected_constraints[0]} These creation checks passed.`,
+      ],
+    },
+    { creation_evidence: { status: "passed" } },
+    { verified: true },
   ])
     assert.equal(auditWorkerOutcome({ ...response, ...change }, options).ok, false);
   assert.equal(auditWorkerOutcome(null, options).ok, false);

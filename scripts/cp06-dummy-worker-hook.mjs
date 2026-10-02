@@ -78,9 +78,17 @@ sdk.ModelRuntime.create = async function (options) {
     broad_scan: false,
   };
   if (scenario === "missing-gap") delete response.evidence_gaps;
+  if (scenario === "extra-evidence") response.creation_evidence = { status: "passed" };
+  if (scenario === "missing-reads") delete response.reads;
+  const readPath =
+    scenario === "credential-read"
+      ? process.argv[2]
+      : scenario === "symlink-read"
+        ? input.symlink_path
+        : input.original_path;
   faux.setResponses([
     ai.fauxAssistantMessage(
-      ai.fauxToolCall("read", { path: input.original_path }, { id: "DUMMY-actual-worker-read" }),
+      ai.fauxToolCall("read", { path: readPath }, { id: "DUMMY-actual-worker-read" }),
       { stopReason: "toolUse" },
     ),
     ai.fauxAssistantMessage(JSON.stringify(response), { stopReason: "stop" }),

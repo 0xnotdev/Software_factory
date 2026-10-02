@@ -19,20 +19,32 @@ export async function superviseCredentialChild(options, dependencies = {}) {
       (value) => typeof value === "string" && value.length > 0,
     )
   )
-    throw failure("invalid CP-06 namespace supervisor invocation", 64);
+    throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 64);
   if (process.platform !== "linux" || process.arch !== "x64") {
-    throw failure("CP-06 isolation supports Linux x86-64 only", 73);
+    throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73);
   }
   const mountCredential = dependencies.mount ?? mountLiveCredentialReadOnly;
   const spawn = dependencies.spawn ?? spawnSync;
-  const beforeHash = sha256(readFileSync(source));
+  const beforeHash = mode === "worker" ? null : sha256(readFileSync(source));
   let mount;
   return await withCleanup(
     async () => {
       try {
-        mount = await mountCredential({ root, source, target });
+        mount = await mountCredential({
+          root,
+          source,
+          target,
+          protectParents: mode !== "unsafe-probe",
+        });
       } catch (cause) {
-        throw failure(`CP-06 isolation setup failed: ${safeError(cause)}`, 73, cause);
+        const setup = failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+        if (cause instanceof AggregateError) {
+          throw compoundFailure(
+            setup,
+            failure("cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED", 74),
+          );
+        }
+        throw setup;
       }
       const command = childCommand({
         mode,
@@ -43,43 +55,59 @@ export async function superviseCredentialChild(options, dependencies = {}) {
         childArgs,
         beforeHash,
       });
-      const result = spawn(command.command, command.args, {
-        cwd: root,
-        encoding: "utf8",
-        env: childEnvironment(mode, target),
-        timeout: mode === "worker" ? 600_000 : 60_000,
-        maxBuffer: 1024 * 1024,
-      });
-      // Throw inside the cleanup boundary so a cleanup error retains this cause.
+      let result;
+      try {
+        result = spawn(command.command, command.args, {
+          cwd: root,
+          encoding: "utf8",
+          env: childEnvironment(mode, source, target),
+          timeout: mode === "worker" ? 600_000 : 60_000,
+          maxBuffer: 1024 * 1024,
+        });
+      } catch (cause) {
+        throw failure("launch", "CP06_CHILD_LAUNCH_FAILED", 70, cause);
+      }
       if (result.error !== undefined) {
+        const timeout = result.error?.code === "ETIMEDOUT";
         throw failure(
-          `CP-06 isolated child launch failed: ${safeError(result.error)}`,
+          timeout ? "timeout" : "launch",
+          timeout ? "CP06_CHILD_TIMEOUT" : "CP06_CHILD_LAUNCH_FAILED",
           70,
           result.error,
         );
       }
       if (result.status !== 0) {
         throw failure(
-          `CP-06 isolated child exited ${result.status ?? "without status"}: ${String(result.stderr ?? "").trim()}`,
+          "child-exit",
+          result.status === 75 ? "CP06_AUTH_BLOCKED" : "CP06_CHILD_EXIT_FAILED",
           result.status ?? 70,
         );
       }
 
-      const afterHash = sha256(readFileSync(source));
-      if (mode === "worker" && beforeHash !== afterHash) {
-        throw failure("CP-06 credential source changed during worker execution", 74);
+      let sourceUnchanged;
+      try {
+        sourceUnchanged =
+          mode === "worker"
+            ? await mount.verifyIntegrity()
+            : beforeHash === sha256(readFileSync(source));
+      } catch {
+        sourceUnchanged = false;
+      }
+      if (!sourceUnchanged) {
+        throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74);
       }
       let childEvidence;
       try {
         childEvidence = JSON.parse(String(result.stdout).trim());
       } catch {
-        throw failure("CP-06 isolated child returned non-compact output", 70);
+        throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
       }
       return {
         schema_version: 1,
         mode,
-        source_unchanged: beforeHash === afterHash,
+        source_unchanged: sourceUnchanged,
         mount_ids_distinct: mount.mountIds.source !== mount.mountIds.target,
+        parent_roots_read_only: mount.parentMounts.length > 0,
         cleanup: "pass",
         child: childEvidence,
       };
@@ -145,7 +173,7 @@ function childCommand({ mode, source, target, helper, syscallProbe, childArgs, b
   };
 }
 
-function childEnvironment(childMode, credentialTarget) {
+function childEnvironment(childMode, credentialSource, credentialTarget) {
   const environment = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     LANG: process.env.LANG ?? "C.UTF-8",
@@ -155,6 +183,7 @@ function childEnvironment(childMode, credentialTarget) {
     PI_TELEMETRY: "0",
   };
   if (childMode === "worker") {
+    environment.CP06_CREDENTIAL_SOURCE = credentialSource;
     environment.CP06_CREDENTIAL_TARGET = credentialTarget;
     for (const name of [
       "SSL_CERT_FILE",
@@ -171,31 +200,77 @@ function childEnvironment(childMode, credentialTarget) {
 }
 
 export function supervisorFailureRecord(error) {
+  const failure = classifyFailure(error);
   return {
     schema_version: 1,
-    code: error?.code ?? "CP06_WORKER_FAILED",
-    exit_code: error?.exitCode ?? 70,
-    message: safeError(error),
+    stage: failure.stage,
+    code: failure.code,
+    exit_code: failure.exit_code,
+    description: failure.description,
     causes:
-      error instanceof AggregateError
-        ? error.errors.map((cause) => ({
-            code: cause?.code ?? "CP06_WORKER_FAILED",
-            exit_code: cause?.exitCode ?? null,
-          }))
-        : [],
+      error instanceof AggregateError ? error.errors.map((cause) => classifyFailure(cause)) : [],
   };
 }
 
-function failure(message, exitCode, cause) {
-  return Object.assign(new Error(message, { cause }), { exitCode, code: "CP06_WORKER_FAILED" });
+function failure(stage, code, exitCode, cause) {
+  return Object.assign(new Error(code, { cause }), { stage, exitCode, code });
+}
+
+function compoundFailure(primary, cleanup) {
+  return Object.assign(new AggregateError([primary, cleanup], "CP06_CLEANUP_FAILED"), {
+    stage: "cleanup",
+    exitCode: 74,
+    code: "CP06_CLEANUP_FAILED",
+  });
 }
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function safeError(error) {
-  if (error instanceof AggregateError)
-    return `${error.message}: ${error.errors.map(safeError).join("; ")}`;
-  return error instanceof Error ? error.message : String(error);
+function classifyFailure(error) {
+  const known = FAILURE_DESCRIPTIONS[error?.code];
+  if (known !== undefined) {
+    return {
+      stage: error.stage ?? known.stage,
+      code: error.code,
+      exit_code: error.exitCode ?? null,
+      description: known.description,
+    };
+  }
+  if (error instanceof AggregateError) {
+    return {
+      stage: "cleanup",
+      code: "CP06_CLEANUP_FAILED",
+      exit_code: error.exitCode ?? 74,
+      description: "credential namespace cleanup failed",
+    };
+  }
+  return {
+    stage: "cleanup",
+    code: "CP06_CREDENTIAL_CLEANUP_FAILED",
+    exit_code: error?.exitCode ?? null,
+    description: "credential mount cleanup failed",
+  };
 }
+
+const FAILURE_DESCRIPTIONS = {
+  CP06_ISOLATION_SETUP_FAILED: {
+    stage: "setup",
+    description: "credential namespace setup failed",
+  },
+  CP06_CHILD_LAUNCH_FAILED: { stage: "launch", description: "isolated child launch failed" },
+  CP06_CHILD_TIMEOUT: { stage: "timeout", description: "isolated child timed out" },
+  CP06_AUTH_BLOCKED: { stage: "child-exit", description: "credential preflight blocked the child" },
+  CP06_CHILD_EXIT_FAILED: { stage: "child-exit", description: "isolated child exited unsuccessfully" },
+  CP06_SOURCE_IDENTITY_CHANGED: {
+    stage: "source-integrity",
+    description: "credential source identity changed",
+  },
+  CP06_CHILD_OUTPUT_INVALID: { stage: "audit", description: "isolated child output was invalid" },
+  CP06_CLEANUP_FAILED: { stage: "cleanup", description: "credential namespace cleanup failed" },
+  CP06_CREDENTIAL_CLEANUP_FAILED: {
+    stage: "cleanup",
+    description: "credential mount cleanup failed",
+  },
+};

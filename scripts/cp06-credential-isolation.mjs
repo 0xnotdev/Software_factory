@@ -67,9 +67,11 @@ export async function mountLiveCredentialReadOnly(options) {
   const maxBytes = options.maxBytes ?? MAX_CREDENTIAL_BYTES;
   const spawn = options.spawnSyncImpl ?? spawnSync;
   const statPath = options.lstatImpl ?? lstat;
+  const protectParents = options.protectParents !== false;
   let handle;
   let sourceMounted = false;
   let targetMounted = false;
+  const mountedParents = [];
   try {
     handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
     const pinned = await handle.stat({ bigint: true });
@@ -78,6 +80,18 @@ export async function mountLiveCredentialReadOnly(options) {
 
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
     await writeFile(target, "", { flag: "wx", mode: 0o600 });
+    const parentMounts = [];
+    if (protectParents) {
+      for (const parent of [...new Set([dirname(source), dirname(target)])]) {
+        checkedSpawn("mount", ["--bind", parent, parent], { root, spawn });
+        mountedParents.push(parent);
+        checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", parent], {
+          root,
+          spawn,
+        });
+        parentMounts.push(inspectReadOnlyMount(parent, { spawn }));
+      }
+    }
     const pinnedPath = `/proc/${process.pid}/fd/${handle.fd}`;
 
     checkedSpawn("mount", ["--bind", pinnedPath, source], { root, spawn });
@@ -100,12 +114,7 @@ export async function mountLiveCredentialReadOnly(options) {
     }
     for (const path of [source, target]) {
       const mounted = await statPath(path, { bigint: true });
-      if (
-        !mounted.isFile() ||
-        mounted.dev !== pinned.dev ||
-        mounted.ino !== pinned.ino ||
-        mounted.size !== pinned.size
-      ) {
+      if (!mounted.isFile() || !sameStatIdentity(pinned, mounted)) {
         throw new Error(`credential mount identity changed: ${path}`);
       }
     }
@@ -116,18 +125,37 @@ export async function mountLiveCredentialReadOnly(options) {
     return {
       source,
       target,
-      sourceIdentity: {
-        dev: String(pinned.dev),
-        ino: String(pinned.ino),
-        size: Number(pinned.size),
-      },
+      sourceIdentity: statIdentity(pinned),
       mountIds: { source: sourceMount.id, target: targetMount.id },
+      parentMounts: parentMounts.map((entry) => ({ id: entry.id, target: entry.target })),
+      async verifyIntegrity() {
+        for (const path of [source, target]) {
+          const mounted = await statPath(path, { bigint: true });
+          if (!mounted.isFile() || !sameStatIdentity(pinned, mounted)) return false;
+        }
+        const currentSourceMount = inspectReadOnlyMount(source, { spawn });
+        const currentTargetMount = inspectReadOnlyMount(target, { spawn });
+        if (
+          currentSourceMount.id !== sourceMount.id ||
+          currentTargetMount.id !== targetMount.id
+        ) {
+          return false;
+        }
+        for (const expected of parentMounts) {
+          const current = inspectReadOnlyMount(expected.target, { spawn });
+          if (current.id !== expected.id) return false;
+        }
+        return true;
+      },
       cleanup() {
         if (cleaned) return;
         cleaned = true;
         const failures = [];
         if (targetMounted) unmount(target, { root, spawn, failures });
         if (sourceMounted) unmount(source, { root, spawn, failures });
+        for (const parent of [...mountedParents].reverse()) {
+          unmount(parent, { root, spawn, failures });
+        }
         if (failures.length > 0) {
           throw new Error(`credential mount cleanup failed: ${failures.join("; ")}`);
         }
@@ -137,6 +165,9 @@ export async function mountLiveCredentialReadOnly(options) {
     const cleanupFailures = [];
     if (targetMounted) unmount(target, { root, spawn, failures: cleanupFailures });
     if (sourceMounted) unmount(source, { root, spawn, failures: cleanupFailures });
+    for (const parent of [...mountedParents].reverse()) {
+      unmount(parent, { root, spawn, failures: cleanupFailures });
+    }
     if (cleanupFailures.length > 0) {
       throw new AggregateError(
         [error, ...cleanupFailures.map((message) => new Error(message))],
@@ -156,13 +187,14 @@ export async function assertDestructiveCredentialWritesDenied(paths, operations 
   const makeSymlink = operations.symlink ?? symlink;
   const makeHardlink = operations.link ?? link;
   const cleanup = operations.rm ?? rm;
+  const scratchRoot = operations.scratchRoot ?? tmpdir();
   for (const target of paths) {
     await expectDenied(`write to ${target}`, () => write(target, "DUMMY unauthorized mutation"));
     await expectDenied(`unlink of ${target}`, () => remove(target));
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const replacement = join(dirname(target), `.DUMMY-replacement-${nonce}`);
-    const symbolic = join(dirname(target), `.DUMMY-symlink-${nonce}`);
-    const hard = join(dirname(target), `.DUMMY-hardlink-${nonce}`);
+    const replacement = join(scratchRoot, `.DUMMY-replacement-${nonce}`);
+    const symbolic = join(scratchRoot, `.DUMMY-symlink-${nonce}`);
+    const hard = join(scratchRoot, `.DUMMY-hardlink-${nonce}`);
     await write(replacement, "DUMMY unauthorized replacement");
     try {
       await expectDenied(`atomic replacement of ${target}`, () => move(replacement, target));
@@ -208,6 +240,30 @@ export function inspectReadOnlyMount(path, options = {}) {
     throw new Error(`credential mount lacks required read-only VFS flags: ${path}`);
   }
   return { id: String(entry.id), target: resolve(entry.target), options: optionsList };
+}
+
+export function statIdentity(stat) {
+  return {
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: String(stat.size),
+    nlink: String(stat.nlink),
+    mode: String(stat.mode),
+    mtime_ns: String(stat.mtimeNs),
+    ctime_ns: String(stat.ctimeNs),
+  };
+}
+
+function sameStatIdentity(expected, actual) {
+  return (
+    expected.dev === actual.dev &&
+    expected.ino === actual.ino &&
+    expected.size === actual.size &&
+    expected.nlink === actual.nlink &&
+    expected.mode === actual.mode &&
+    expected.mtimeNs === actual.mtimeNs &&
+    expected.ctimeNs === actual.ctimeNs
+  );
 }
 
 function assertPinnedRegularFile(pinned, named, maxBytes) {

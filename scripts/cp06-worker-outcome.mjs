@@ -1,15 +1,33 @@
 import { isExpectedOriginalReference } from "./cp06-worker-audit.mjs";
 
 export function auditWorkerOutcome(response, options) {
+  const topLevelKeys = [
+    "broad_scan",
+    "corrected_constraints",
+    "evidence_gaps",
+    "missing_source",
+    "reads",
+    "status",
+  ];
   const corrected = Array.isArray(response?.corrected_constraints)
-    ? response.corrected_constraints.join(" ")
-    : "";
+    ? response.corrected_constraints
+    : [];
   if (
-    response?.status !== "MISSING_SOURCE" ||
+    response === null ||
+    typeof response !== "object" ||
+    Array.isArray(response) ||
+    Object.keys(response).sort().join(",") !== topLevelKeys.join(",") ||
+    response.status !== "MISSING_SOURCE" ||
     !isExpectedOriginalReference(response.missing_source, options) ||
     response.broad_scan !== false ||
-    !/ownership comes only from the authenticated principal/i.test(corrected) ||
-    !/request-supplied owner fields? (?:are )?ignored/i.test(corrected)
+    !Array.isArray(response.reads) ||
+    response.reads.length !== 1 ||
+    response.reads[0] !== options.expectedOriginalPath ||
+    corrected.length !== 1 ||
+    typeof corrected[0] !== "string" ||
+    !/ownership comes only from the authenticated principal/i.test(corrected[0]) ||
+    !/request-supplied owner fields? (?:are )?ignored/i.test(corrected[0]) ||
+    /\b(?:passed|verified|proven|satisfied)\b/i.test(corrected[0])
   ) {
     return { ok: false, reason: "response did not satisfy the targeted-read oracle" };
   }

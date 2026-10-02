@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         originalPath,
         "# DUMMY authority\n\nOwnership comes only from the authenticated principal; request-supplied owner fields are ignored.\n",
       );
+      const credentialAlias = join(directory, "DUMMY-credential-alias.json");
       const contractPath = join(directory, "DUMMY-contract.yaml");
       const packPath = join(directory, "DUMMY-pack.md");
       await writeFile(
@@ -34,6 +35,10 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         ["empty-gap", 75],
         ["missing-gap", 75],
         ["contradictory-gap", 75],
+        ["extra-evidence", 75],
+        ["missing-reads", 75],
+        ["credential-read", 75],
+        ["symlink-read", 75],
         ["expired", 75],
         ["near-expiry", 75],
         ["timeout", 70],
@@ -53,6 +58,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
           },
         });
         await writeFile(auth, authBytes);
+        if (scenario === "symlink-read") await symlink(auth, credentialAlias);
         await writeFile(
           inputPath,
           JSON.stringify({
@@ -62,6 +68,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
             contract_path: contractPath,
             pack_path: packPath,
             original_path: originalPath,
+            symlink_path: credentialAlias,
             provider: "openai-codex",
             model: "DUMMY-model",
             timeout_ms: scenario === "timeout" ? 1_000 : 20_000,
@@ -103,8 +110,21 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         assert.equal(counts.refresh, 0);
         assert.equal(await readFile(auth, "utf8"), authBytes);
         if (["expired", "near-expiry"].includes(scenario)) assert.equal(counts.runtime_create, 0);
-        if (["empty-gap", "missing-gap", "contradictory-gap"].includes(scenario))
+        if (
+          [
+            "empty-gap",
+            "missing-gap",
+            "contradictory-gap",
+            "extra-evidence",
+            "missing-reads",
+          ].includes(scenario)
+        )
           assert.match(result.stderr, /SDK worker outcome failed/);
+        if (["credential-read", "symlink-read"].includes(scenario)) {
+          assert.match(result.stderr, /SDK event audit failed/);
+          assert.equal(result.stdout.includes("DUMMY-ACCESS"), false);
+          assert.equal(result.stderr.includes("DUMMY-ACCESS"), false);
+        }
         if (scenario === "timeout") assert.match(result.stderr, /worker timed out and was aborted/);
         const output = scenario === "valid" ? JSON.parse(result.stdout) : undefined;
         if (output) {
@@ -113,6 +133,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
           assert.equal(output.event_stream.read_audit.read_count, 1);
           assert.equal(output.response.evidence_gaps[0].status, "unverified");
         } else assert.equal(result.stdout, "");
+        await rm(credentialAlias, { force: true });
         cases.push({
           scenario,
           exit_code: result.status,

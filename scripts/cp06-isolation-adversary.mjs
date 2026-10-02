@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -50,10 +51,16 @@ jsAttempt("direct_write_target", () => writeFileSync(target, "DUMMY BYPASS targe
 jsAttempt("direct_write_source", () => writeFileSync(source, "DUMMY BYPASS source"));
 jsAttempt("unlink_target", () => unlinkSync(target));
 jsAttempt("unlink_source", () => unlinkSync(source));
-const replacement = join(dirname(target), "DUMMY-replacement");
+jsAttempt("create_target_parent_entry", () =>
+  writeFileSync(join(dirname(target), "DUMMY-parent-entry"), "DUMMY parent replacement"),
+);
+jsAttempt("create_source_parent_entry", () =>
+  writeFileSync(join(dirname(source), "DUMMY-parent-entry"), "DUMMY parent replacement"),
+);
+const replacement = join(proofRoot, "DUMMY-target-replacement");
 writeFileSync(replacement, "DUMMY replacement");
 jsAttempt("rename_over_target", () => renameSync(replacement, target));
-const sourceReplacement = join(dirname(source), "DUMMY-source-replacement");
+const sourceReplacement = join(proofRoot, "DUMMY-source-replacement");
 writeFileSync(sourceReplacement, "DUMMY source replacement");
 jsAttempt("rename_over_source", () => renameSync(sourceReplacement, source));
 jsAttempt("symlink_replacement", () => {
@@ -72,6 +79,26 @@ jsAttempt("hardlink_target", () => linkSync(target, join(proofRoot, "DUMMY-hardl
 jsAttempt("hardlink_source", () => linkSync(source, join(proofRoot, "DUMMY-source-hardlink")));
 
 if (securityMode === "hardened") {
+  jsAttempt("unlink_target_parent", () => rmdirSync(dirname(target)));
+  jsAttempt("unlink_source_parent", () => rmdirSync(dirname(source)));
+  jsAttempt("rename_target_parent", () =>
+    renameSync(dirname(target), join(proofRoot, "DUMMY-renamed-target-parent")),
+  );
+  jsAttempt("rename_source_parent", () =>
+    renameSync(dirname(source), join(proofRoot, "DUMMY-renamed-source-parent")),
+  );
+  jsAttempt("symlink_in_target_parent", () =>
+    symlinkSync("/tmp/DUMMY-does-not-exist", join(dirname(target), "DUMMY-parent-symlink")),
+  );
+  jsAttempt("symlink_in_source_parent", () =>
+    symlinkSync("/tmp/DUMMY-does-not-exist", join(dirname(source), "DUMMY-parent-symlink")),
+  );
+  jsAttempt("hardlink_into_target_parent", () =>
+    linkSync(target, join(dirname(target), "DUMMY-parent-hardlink")),
+  );
+  jsAttempt("hardlink_into_source_parent", () =>
+    linkSync(source, join(dirname(source), "DUMMY-parent-hardlink")),
+  );
   commandAttempt("direct_namespace_syscalls", syscallProbe, [target]);
 } else {
   results.direct_namespace_syscalls = { exit: null, skipped: true };
@@ -107,6 +134,9 @@ if (unmountTarget.status === 0) {
 } else {
   results.restore_target_bind = { exit: null, skipped: true };
 }
+jsAttempt("scratch_write", () =>
+  writeFileSync(join(proofRoot, "DUMMY-writable-scratch"), "DUMMY scratch"),
+);
 const alias = join(proofRoot, "DUMMY-alias");
 mkdirSync(alias, { recursive: true });
 const bindParent = commandAttempt("bind_parent_alias", "mount", ["--bind", dirname(source), alias]);

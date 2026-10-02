@@ -99,6 +99,7 @@ async function main() {
     isolated.mode !== "worker" ||
     isolated.source_unchanged !== true ||
     isolated.mount_ids_distinct !== true ||
+    isolated.parent_roots_read_only !== true ||
     isolated.cleanup !== "pass" ||
     isolated.child?.result !== "pass"
   ) {
@@ -138,6 +139,7 @@ async function main() {
       supported_platform: "Linux x86-64",
       dummy_security_preflight: security,
       source_and_target_distinct_read_only_mounts: isolated.mount_ids_distinct,
+      credential_parent_roots_read_only: isolated.parent_roots_read_only,
       evaluated_child_capabilities: "all sets empty",
       evaluated_child_no_new_privs: true,
       evaluated_child_seccomp: true,
@@ -182,18 +184,27 @@ async function recordBlocked(error, stage) {
 }
 
 export function createWorkerBlockedStatus(error, stage, recordedAt = new Date().toISOString()) {
+  const nestedWorkerFailure =
+    error?.workerFailure ??
+    (error instanceof AggregateError
+      ? error.errors.find((cause) => cause?.workerFailure !== undefined)?.workerFailure
+      : undefined);
   return {
     schema_version: 1,
     gate: "P-06-fresh-worker",
     result: "blocked",
     stage,
+    failure_stage: error?.stage ?? null,
     code: error?.code ?? "CP06_WORKER_FAILED",
-    cleanup_failed: error?.code === "CP06_CLEANUP_FAILED",
-    worker_failure: error?.workerFailure ?? null,
+    cleanup_failed:
+      error?.code === "CP06_CLEANUP_FAILED" ||
+      nestedWorkerFailure?.code === "CP06_CLEANUP_FAILED",
+    worker_failure: nestedWorkerFailure ?? null,
     causes:
       error instanceof AggregateError
         ? error.errors.map((cause) => ({
-            code: cause?.code ?? "CP06_WORKER_FAILED",
+            stage: cause?.stage ?? "cleanup",
+            code: cause?.code ?? "CP06_CREDENTIAL_CLEANUP_FAILED",
             exit_code: cause?.exitCode ?? null,
           }))
         : [],

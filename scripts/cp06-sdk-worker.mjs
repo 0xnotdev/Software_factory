@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06AuthBlockedError, Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
+import { createGuardedReadTool, canonicalWorkerPaths } from "./cp06-guarded-read.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 
@@ -16,14 +17,19 @@ try {
   const credentialTarget = resolve(credentialTargetArg);
   const input = JSON.parse(await readFile(resolve(inputPathArg), "utf8"));
   validateInput(input);
+  const paths = canonicalWorkerPaths(
+    input,
+    credentialTarget,
+    process.env.CP06_CREDENTIAL_SOURCE,
+  );
   const pi = resolvePiPackage();
   const sdk = await import(pathToFileURL(join(pi.root, "dist/index.js")));
   assertSdkSurface(sdk);
 
-  const contract = await readFile(input.contract_path, "utf8");
-  const pack = await readFile(input.pack_path, "utf8");
-  const original = await readFile(input.original_path);
-  const prompt = buildPrompt({ contract, pack, originalPath: input.original_path });
+  const contract = await readFile(paths.contractPath, "utf8");
+  const pack = await readFile(paths.packPath, "utf8");
+  const original = await readFile(paths.originalPath);
+  const prompt = buildPrompt({ contract, pack, originalPath: paths.originalPath });
   const store = await Cp06ReadOnlyCredentialStore.load({
     path: credentialTarget,
     providerId: input.provider,
@@ -54,14 +60,20 @@ try {
     enableAnalytics: false,
     enableInstallTelemetry: false,
   });
+  const guardedRead = createGuardedReadTool({
+    sdk,
+    root: paths.root,
+    expectedOriginalPath: paths.originalPath,
+  });
   const { session, extensionsResult } = await sdk.createAgentSession({
-    cwd: input.root,
+    cwd: paths.root,
     agentDir: dirname(credentialTarget),
     model,
     modelRuntime: runtime,
     resourceLoader,
     tools: ["read"],
-    sessionManager: sdk.SessionManager.inMemory(input.root),
+    customTools: [guardedRead],
+    sessionManager: sdk.SessionManager.inMemory(paths.root),
     settingsManager,
     thinkingLevel: "high",
   });
@@ -97,8 +109,8 @@ try {
   const responseText = finalAssistantText(events);
   const response = parseResponse(responseText);
   const readAudit = auditReadEvents(events, {
-    root: input.root,
-    expectedOriginalPath: input.original_path,
+    root: paths.root,
+    expectedOriginalPath: paths.originalPath,
     expectedOriginal: original,
     decisiveText: ["request-supplied owner fields are ignored"],
   });
@@ -106,9 +118,9 @@ try {
     throw blocked(`SDK event audit failed: ${readAudit.reason}`);
   }
   const outcome = auditWorkerOutcome(response, {
-    root: input.root,
-    referenceRoot: input.fixture_root,
-    expectedOriginalPath: input.original_path,
+    root: paths.root,
+    referenceRoot: paths.fixtureRoot,
+    expectedOriginalPath: paths.originalPath,
   });
   if (!outcome.ok) throw blocked(`SDK worker outcome failed: ${outcome.reason}`);
 
@@ -211,6 +223,7 @@ function assertSdkSurface(sdk) {
     "ModelRuntime",
     "createAgentSession",
     "createExtensionRuntime",
+    "createReadTool",
     "SessionManager",
     "SettingsManager",
   ]) {
@@ -274,5 +287,5 @@ function blocked(message) {
 
 function safeMessage(error) {
   if (error?.message === "CP06_WORKER_TIMEOUT") return "worker timed out and was aborted";
-  return error instanceof Error ? error.message : String(error);
+  return "worker execution failed";
 }

@@ -148,19 +148,21 @@ export function namespaceWorkerError(result) {
       : `CP-06 isolated SDK worker exited ${result.status ?? "without status"}`,
   );
   error.code = result.status === 73 ? "CP06_ISOLATION_UNSUPPORTED" : "CP06_WORKER_FAILED";
+  error.stage = result.status === 73 ? "setup" : "namespace";
   error.exitCode = result.status ?? 70;
-  error.stderr = result.stderr;
-  // Preserve the supervisor's compact failure identity, including both causes
-  // when child execution or audit and mount cleanup fail. Do not persist raw stderr.
   try {
     const failure = JSON.parse(String(result.stderr).trim());
-    if (failure.schema_version === 1 && failure.exit_code === result.status) {
+    if (isSupervisorFailure(failure, result.status)) {
       error.workerFailure = {
+        schema_version: 1,
+        stage: failure.stage,
         code: failure.code,
         exit_code: failure.exit_code,
-        causes: failure.causes,
+        description: failure.description,
+        causes: failure.causes.map((cause) => ({ ...cause })),
       };
-      if (failure.code === "CP06_CLEANUP_FAILED") error.code = failure.code;
+      error.code = failure.code;
+      error.stage = failure.stage;
     }
   } catch {}
   return error;
@@ -218,6 +220,57 @@ function runNamespace(options) {
   });
 }
 
+function isSupervisorFailure(value, status) {
+  return (
+    value?.schema_version === 1 &&
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join(",") ===
+      "causes,code,description,exit_code,schema_version,stage" &&
+    value.exit_code === status &&
+    typeof value.stage === "string" &&
+    SUPERVISOR_FAILURE_CODES.get(value.code) === value.stage &&
+    typeof value.description === "string" &&
+    value.description === SUPERVISOR_FAILURE_DESCRIPTIONS[value.code] &&
+    Array.isArray(value.causes) &&
+    value.causes.every(
+      (cause) =>
+        cause !== null &&
+        typeof cause === "object" &&
+        !Array.isArray(cause) &&
+        Object.keys(cause).sort().join(",") ===
+          "code,description,exit_code,stage" &&
+        SUPERVISOR_FAILURE_CODES.get(cause.code) === cause.stage &&
+        cause.description === SUPERVISOR_FAILURE_DESCRIPTIONS[cause.code] &&
+        (cause.exit_code === null || Number.isSafeInteger(cause.exit_code)),
+    )
+  );
+}
+
+const SUPERVISOR_FAILURE_DESCRIPTIONS = {
+  CP06_ISOLATION_SETUP_FAILED: "credential namespace setup failed",
+  CP06_CHILD_LAUNCH_FAILED: "isolated child launch failed",
+  CP06_CHILD_TIMEOUT: "isolated child timed out",
+  CP06_AUTH_BLOCKED: "credential preflight blocked the child",
+  CP06_CHILD_EXIT_FAILED: "isolated child exited unsuccessfully",
+  CP06_SOURCE_IDENTITY_CHANGED: "credential source identity changed",
+  CP06_CHILD_OUTPUT_INVALID: "isolated child output was invalid",
+  CP06_CLEANUP_FAILED: "credential namespace cleanup failed",
+  CP06_CREDENTIAL_CLEANUP_FAILED: "credential mount cleanup failed",
+};
+const SUPERVISOR_FAILURE_CODES = new Map([
+  ["CP06_ISOLATION_SETUP_FAILED", "setup"],
+  ["CP06_CHILD_LAUNCH_FAILED", "launch"],
+  ["CP06_CHILD_TIMEOUT", "timeout"],
+  ["CP06_AUTH_BLOCKED", "child-exit"],
+  ["CP06_CHILD_EXIT_FAILED", "child-exit"],
+  ["CP06_SOURCE_IDENTITY_CHANGED", "source-integrity"],
+  ["CP06_CHILD_OUTPUT_INVALID", "audit"],
+  ["CP06_CLEANUP_FAILED", "cleanup"],
+  ["CP06_CREDENTIAL_CLEANUP_FAILED", "cleanup"],
+]);
+
 function assertUnsafeControl(proof) {
   assert(proof.mode === "unsafe-probe", "unsafe control mode mismatch");
   assert(proof.mount_ids_distinct === true, "unsafe control lacked distinct mounts");
@@ -226,6 +279,7 @@ function assertUnsafeControl(proof) {
   assert(proof.child.write_after_remount.exit === 0, "unsafe post-remount write failed");
   assert(proof.child.unmount_target.exit === 0, "unsafe unmount did not succeed");
   assert(proof.child.bind_parent_alias.exit === 0, "unsafe parent bind did not succeed");
+  assert(proof.child.scratch_write.exit === 0, "unsafe scratch path was not writable");
   assert(proof.child.alias_underlying_write.exit === 0, "unsafe alias write did not succeed");
   assert(
     proof.child.identity.status.CapEff !== "0000000000000000",
@@ -253,6 +307,16 @@ function assertHardenedProof(proof) {
     "symlink_source_replacement",
     "hardlink_target",
     "hardlink_source",
+    "create_target_parent_entry",
+    "create_source_parent_entry",
+    "unlink_target_parent",
+    "unlink_source_parent",
+    "rename_target_parent",
+    "rename_source_parent",
+    "symlink_in_target_parent",
+    "symlink_in_source_parent",
+    "hardlink_into_target_parent",
+    "hardlink_into_source_parent",
     "nested_user_mount_namespace",
     "nsenter_self",
     "nsenter_supervisor",
@@ -266,6 +330,8 @@ function assertHardenedProof(proof) {
   }
   assert(proof.child.source.unchanged === true, "hardened child source hash changed");
   assert(proof.child.alias_underlying_write.skipped === true, "alias write was attempted");
+  assert(proof.child.scratch_write.exit === 0, "dedicated scratch path was not writable");
+  assert(proof.parent_roots_read_only === true, "credential parent roots were not read-only");
   assert(proof.child.ordinary_node_child.exit === 0, "ordinary child process was blocked");
   assert(
     proof.child.ordinary_node_child.stdout === "DUMMY-child-ok",
@@ -415,6 +481,8 @@ function summarizeHardened(proof) {
     namespace_entry_creation_denied: true,
     uid_change_denied: true,
     alternate_parent_bind_denied: true,
+    credential_parent_roots_read_only: proof.parent_roots_read_only,
+    dedicated_scratch_writable: proof.child.scratch_write.exit === 0,
     dummy_source_unchanged: proof.source_unchanged,
   };
 }

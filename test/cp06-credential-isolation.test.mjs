@@ -17,16 +17,18 @@ test("live credential mount pins one inode behind distinct read-only regular mou
   const sourceStat = await lstat(source, { bigint: true });
   const calls = [];
   let mountId = 40;
+  const mountIds = new Map();
   const spawnSyncImpl = (command, args) => {
     calls.push([command, ...args]);
     if (command === "findmnt") {
       const path = args.at(-1);
+      if (!mountIds.has(path)) mountIds.set(path, ++mountId);
       return {
         status: 0,
         stdout: JSON.stringify({
           filesystems: [
             {
-              id: ++mountId,
+              id: mountIds.get(path),
               target: path,
               "vfs-options": "ro,nosuid,nodev,noexec,relatime",
             },
@@ -49,19 +51,48 @@ test("live credential mount pins one inode behind distinct read-only regular mou
     try {
       assert.equal(await readFile(source, "utf8"), sourceBytes);
       assert.notEqual(mount.mountIds.source, mount.mountIds.target);
-      assert.match(calls[0][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.deepEqual(calls[0].slice(0, 2), ["mount", "--bind"]);
-      assert.equal(calls[0][3], source);
-      assert.deepEqual(calls[1], ["mount", "-o", "remount,bind,ro,nosuid,nodev,noexec", source]);
-      assert.match(calls[2][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.equal(calls[2][3], target);
-      assert.deepEqual(calls[3], ["mount", "-o", "remount,bind,ro,nosuid,nodev,noexec", target]);
+      const mountCallsOnly = calls.filter(([command]) => command === "mount");
+      assert.deepEqual(
+        mountCallsOnly.slice(0, 4),
+        [
+          ["mount", "--bind", root, root],
+          ["mount", "-o", "remount,bind,ro,nosuid,nodev,noexec", root],
+          ["mount", "--bind", join(root, "agent"), join(root, "agent")],
+          [
+            "mount",
+            "-o",
+            "remount,bind,ro,nosuid,nodev,noexec",
+            join(root, "agent"),
+          ],
+        ],
+      );
+      assert.equal(mount.parentMounts.length, 2);
+      assert.equal(await mount.verifyIntegrity(), true);
+      assert.match(mountCallsOnly[4][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+      assert.deepEqual(mountCallsOnly[4].slice(0, 2), ["mount", "--bind"]);
+      assert.equal(mountCallsOnly[4][3], source);
+      assert.deepEqual(mountCallsOnly[5], [
+        "mount",
+        "-o",
+        "remount,bind,ro,nosuid,nodev,noexec",
+        source,
+      ]);
+      assert.match(mountCallsOnly[6][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+      assert.equal(mountCallsOnly[6][3], target);
+      assert.deepEqual(mountCallsOnly[7], [
+        "mount",
+        "-o",
+        "remount,bind,ro,nosuid,nodev,noexec",
+        target,
+      ]);
     } finally {
       mount.cleanup();
     }
-    assert.deepEqual(calls.slice(-2), [
+    assert.deepEqual(calls.slice(-4), [
       ["umount", target],
       ["umount", source],
+      ["umount", join(root, "agent")],
+      ["umount", root],
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
