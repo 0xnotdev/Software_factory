@@ -37,7 +37,13 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           protectParents: mode !== "unsafe-probe",
         });
       } catch (cause) {
-        const setup = failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+        const missingSource = hasErrorCode(cause, "ENOENT");
+        const setup = failure(
+          missingSource ? "missing-source" : "setup",
+          missingSource ? "CP06_CREDENTIAL_SOURCE_MISSING" : "CP06_ISOLATION_SETUP_FAILED",
+          missingSource ? 70 : 73,
+          cause,
+        );
         if (cause instanceof AggregateError) {
           throw compoundFailure(
             setup,
@@ -183,9 +189,12 @@ function childEnvironment(childMode, credentialSource, credentialTarget) {
     PI_TELEMETRY: "0",
   };
   if (childMode === "worker") {
+    environment.CP06_PROJECT_ROOT = root;
     environment.CP06_CREDENTIAL_SOURCE = credentialSource;
     environment.CP06_CREDENTIAL_TARGET = credentialTarget;
     for (const name of [
+      "CP06_PI_PACKAGE_ROOT",
+      "CP06_PI_BIN",
       "SSL_CERT_FILE",
       "SSL_CERT_DIR",
       "NODE_EXTRA_CA_CERTS",
@@ -224,6 +233,13 @@ function compoundFailure(primary, cleanup) {
   });
 }
 
+function hasErrorCode(error, code) {
+  if (error?.code === code) return true;
+  return (
+    error instanceof AggregateError && error.errors.some((cause) => hasErrorCode(cause, code))
+  );
+}
+
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -258,6 +274,10 @@ const FAILURE_DESCRIPTIONS = {
   CP06_ISOLATION_SETUP_FAILED: {
     stage: "setup",
     description: "credential namespace setup failed",
+  },
+  CP06_CREDENTIAL_SOURCE_MISSING: {
+    stage: "missing-source",
+    description: "credential source is missing",
   },
   CP06_CHILD_LAUNCH_FAILED: { stage: "launch", description: "isolated child launch failed" },
   CP06_CHILD_TIMEOUT: { stage: "timeout", description: "isolated child timed out" },

@@ -69,7 +69,8 @@ sdk.ModelRuntime.create = async function (options) {
     missing_source: "docs/AUTH.md",
     reads: [input.original_path],
     corrected_constraints: [
-      "ownership comes only from the authenticated principal; request-supplied owner fields are ignored",
+      "ownership comes only from the authenticated principal",
+      "request-supplied owner fields are ignored",
     ],
     evidence_gaps:
       scenario === "empty-gap"
@@ -79,6 +80,9 @@ sdk.ModelRuntime.create = async function (options) {
   };
   if (scenario === "missing-gap") delete response.evidence_gaps;
   if (scenario === "extra-evidence") response.creation_evidence = { status: "passed" };
+  if (scenario === "constraint-pass") {
+    response.corrected_constraints[1] += "; creation evidence status: pass";
+  }
   if (scenario === "missing-reads") delete response.reads;
   const readPath =
     scenario === "credential-read"

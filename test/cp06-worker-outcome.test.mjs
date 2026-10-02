@@ -20,7 +20,8 @@ const response = {
   reads: [options.expectedOriginalPath],
   broad_scan: false,
   corrected_constraints: [
-    "Ownership comes only from the authenticated principal; request-supplied owner fields are ignored.",
+    "ownership comes only from the authenticated principal",
+    "request-supplied owner fields are ignored",
   ],
   evidence_gaps: [gap],
 };
@@ -76,8 +77,12 @@ test("creation evidence cannot replace source recovery or relax the read outcome
     },
     {
       corrected_constraints: [
-        `${response.corrected_constraints[0]} These creation checks passed.`,
+        response.corrected_constraints[0],
+        `${response.corrected_constraints[1]}; creation evidence status: pass`,
       ],
+    },
+    {
+      corrected_constraints: [...response.corrected_constraints].reverse(),
     },
     { creation_evidence: { status: "passed" } },
     { verified: true },

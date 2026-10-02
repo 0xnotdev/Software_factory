@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06AuthBlockedError, Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
-import { createGuardedReadTool, canonicalWorkerPaths } from "./cp06-guarded-read.mjs";
+import { canonicalWorkerPaths, createGuardedReadTool } from "./cp06-guarded-read.mjs";
+import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 
@@ -26,9 +25,14 @@ try {
   const sdk = await import(pathToFileURL(join(pi.root, "dist/index.js")));
   assertSdkSurface(sdk);
 
+  const guardedRead = createGuardedReadTool({
+    sdk,
+    root: paths.root,
+    expectedOriginalPath: paths.originalPath,
+  });
   const contract = await readFile(paths.contractPath, "utf8");
   const pack = await readFile(paths.packPath, "utf8");
-  const original = await readFile(paths.originalPath);
+  const original = guardedRead.original;
   const prompt = buildPrompt({ contract, pack, originalPath: paths.originalPath });
   const store = await Cp06ReadOnlyCredentialStore.load({
     path: credentialTarget,
@@ -60,11 +64,6 @@ try {
     enableAnalytics: false,
     enableInstallTelemetry: false,
   });
-  const guardedRead = createGuardedReadTool({
-    sdk,
-    root: paths.root,
-    expectedOriginalPath: paths.originalPath,
-  });
   const { session, extensionsResult } = await sdk.createAgentSession({
     cwd: paths.root,
     agentDir: dirname(credentialTarget),
@@ -72,7 +71,7 @@ try {
     modelRuntime: runtime,
     resourceLoader,
     tools: ["read"],
-    customTools: [guardedRead],
+    customTools: [guardedRead.tool],
     sessionManager: sdk.SessionManager.inMemory(paths.root),
     settingsManager,
     thinkingLevel: "high",
@@ -129,6 +128,7 @@ try {
       schema_version: 1,
       result: "pass",
       pi_version: pi.version,
+      pi_install: pi.provenance,
       provider: input.provider,
       model: input.model,
       oauth_preflight: {
@@ -176,46 +176,15 @@ function validateInput(input) {
 }
 
 function resolvePiPackage() {
-  const piExecutable = findExecutable("pi");
-  const cli = realpathSync(piExecutable);
-  const packageRoot = findPiPackageRoot(cli);
-  const metadata = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  const version = spawnSync(piExecutable, ["--version"], { encoding: "utf8", timeout: 10_000 });
-  if (
-    metadata.name !== "@earendil-works/pi-coding-agent" ||
-    metadata.version !== "0.85.1" ||
-    version.status !== 0 ||
-    version.stdout.trim() !== "0.85.1"
-  ) {
-    throw blocked("exact Pi 0.85.1 is required");
+  try {
+    return resolvePinnedPiInstall({
+      projectRoot: process.env.CP06_PROJECT_ROOT,
+      packageRoot: process.env.CP06_PI_PACKAGE_ROOT,
+      executable: process.env.CP06_PI_BIN,
+    });
+  } catch {
+    throw blocked("explicit task-local Pi 0.85.1 installation is required");
   }
-  return { root: packageRoot, version: metadata.version };
-}
-
-function findPiPackageRoot(executable) {
-  let directory = dirname(executable);
-  for (let depth = 0; depth < 5; depth += 1) {
-    try {
-      const metadata = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-      if (metadata.name === "@earendil-works/pi-coding-agent") return directory;
-    } catch {}
-    const parent = dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  throw blocked("Pi package root could not be resolved from its executable");
-}
-
-function findExecutable(name) {
-  for (const directory of String(process.env.PATH ?? "").split(delimiter)) {
-    if (!directory) continue;
-    const candidate = join(directory, name);
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  throw blocked("Pi executable is unavailable");
 }
 
 function assertSdkSurface(sdk) {
@@ -248,7 +217,7 @@ function emptyResourceLoader(sdk, systemPrompt) {
 }
 
 function buildPrompt({ contract, pack, originalPath }) {
-  return `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. The evidence_gaps field must be exactly [{"id":"creation-time-ownership","status":"unverified","missing_checks":["principal-derived-owner","request-owner-ignored"]}]: the supplied deterministic evidence does not test those creation-time behaviors. Recovering a requirement by reading is not evidence that the behavior passed. Do not add a passed/verified disposition or prose fields to this structured gap. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
+  return `You are a fresh task reviewer. You have no previous worker transcript. Review only the bounded handoff below. First inspect the task and pack. One concrete creation-time ownership rule was deliberately omitted from this handoff. Report MISSING_SOURCE, set missing_source to the exact canonical relative path docs/AUTH.md, and use the read tool exactly once, without offset or limit, on the supplied exact-original path; do not scan or read any other project file. Then return a concise JSON object with keys status, missing_source, reads, corrected_constraints, evidence_gaps, and broad_scan. The corrected_constraints field must be exactly ["ownership comes only from the authenticated principal","request-supplied owner fields are ignored"]. The evidence_gaps field must be exactly [{"id":"creation-time-ownership","status":"unverified","missing_checks":["principal-derived-owner","request-owner-ignored"]}]: the supplied deterministic evidence does not test those creation-time behaviors. Recovering a requirement by reading is not evidence that the behavior passed. Do not add a passed/verified disposition or prose fields to this structured gap. Do not modify files.\n\nEXACT TASK CONTRACT\n---\n${contract}\n---\n\nBOUNDED PACK\n---\n${pack}\n---\n\nEXISTING DETERMINISTIC EVIDENCE\n---\nThe in-memory auth fixture currently reports absent/forged credentials as 401 and concealed cross-account GET/PUT/DELETE as 404 with unchanged state. Review whether the handoff states every decisive acceptance constraint; do not assume unshown creation semantics.\n---\n\nSUPPLIED EXACT-ORIGINAL PATH (read only if needed)\n${originalPath}\n`;
 }
 
 function finalAssistantText(events) {

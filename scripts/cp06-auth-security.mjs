@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 
 export class Cp06IsolationUnsupportedError extends Error {
   constructor(message) {
@@ -21,7 +22,7 @@ export async function runCp06SecurityPreflight(options = {}) {
     spawnSyncImpl: options.spawnSyncImpl,
   });
   const binaries = compileIsolationHelpers({ root, outputRoot });
-  const pi = resolvePiPackage();
+  const pi = resolvePiPackage(root, options);
   const unsafe = await runIsolationProbe({
     root,
     outputRoot,
@@ -47,6 +48,7 @@ export async function runCp06SecurityPreflight(options = {}) {
     command: "npm run proof:cp06:auth-security",
     exit_code: 0,
     pi_version: pi.version,
+    pi_install: pi.provenance,
     platform: prerequisites,
     binaries: {
       seccomp_helper_sha256: sha256(readFileSync(binaries.helper)),
@@ -250,6 +252,7 @@ function isSupervisorFailure(value, status) {
 
 const SUPERVISOR_FAILURE_DESCRIPTIONS = {
   CP06_ISOLATION_SETUP_FAILED: "credential namespace setup failed",
+  CP06_CREDENTIAL_SOURCE_MISSING: "credential source is missing",
   CP06_CHILD_LAUNCH_FAILED: "isolated child launch failed",
   CP06_CHILD_TIMEOUT: "isolated child timed out",
   CP06_AUTH_BLOCKED: "credential preflight blocked the child",
@@ -261,6 +264,7 @@ const SUPERVISOR_FAILURE_DESCRIPTIONS = {
 };
 const SUPERVISOR_FAILURE_CODES = new Map([
   ["CP06_ISOLATION_SETUP_FAILED", "setup"],
+  ["CP06_CREDENTIAL_SOURCE_MISSING", "missing-source"],
   ["CP06_CHILD_LAUNCH_FAILED", "launch"],
   ["CP06_CHILD_TIMEOUT", "timeout"],
   ["CP06_AUTH_BLOCKED", "child-exit"],
@@ -394,45 +398,18 @@ function runDummySdkProof({ root, helper, piRoot }) {
   return parseCompactJson(result.stdout, "DUMMY SDK proof");
 }
 
-function resolvePiPackage() {
-  const executable = realpathSync(findExecutable("pi"));
-  const root = findPiPackageRoot(executable);
-  const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const version = checked("pi", ["--version"], root).stdout.trim();
-  if (
-    metadata.name !== "@earendil-works/pi-coding-agent" ||
-    metadata.version !== "0.85.1" ||
-    version !== "0.85.1"
-  ) {
-    throw unsupported("exact Pi 0.85.1 is unavailable");
+function resolvePiPackage(root, options) {
+  try {
+    return resolvePinnedPiInstall({
+      projectRoot: root,
+      packageRoot: options.piPackageRoot ?? process.env.CP06_PI_PACKAGE_ROOT,
+      executable: options.piExecutable ?? process.env.CP06_PI_BIN,
+      spawnSyncImpl: options.piSpawnSyncImpl,
+      environment: options.environment,
+    });
+  } catch {
+    throw unsupported("explicit task-local Pi 0.85.1 installation is unavailable");
   }
-  return { root, version };
-}
-
-function findPiPackageRoot(executable) {
-  let directory = dirname(executable);
-  for (let depth = 0; depth < 5; depth += 1) {
-    try {
-      const metadata = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-      if (metadata.name === "@earendil-works/pi-coding-agent") return directory;
-    } catch {}
-    const parent = dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  throw unsupported("Pi package root could not be resolved from its executable");
-}
-
-function findExecutable(name) {
-  for (const directory of String(process.env.PATH ?? "").split(delimiter)) {
-    if (!directory) continue;
-    const candidate = join(directory, name);
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  throw unsupported(`required executable is unavailable: ${name}`);
 }
 
 function checked(command, args, cwd) {

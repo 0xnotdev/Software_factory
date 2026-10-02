@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 
@@ -36,6 +36,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         ["missing-gap", 75],
         ["contradictory-gap", 75],
         ["extra-evidence", 75],
+        ["constraint-pass", 75],
         ["missing-reads", 75],
         ["credential-read", 75],
         ["symlink-read", 75],
@@ -97,6 +98,9 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
               PI_OFFLINE: "1",
               PI_SKIP_VERSION_CHECK: "1",
               CP06_DUMMY_PI_ROOT: piRoot,
+              CP06_PROJECT_ROOT: root,
+              CP06_PI_PACKAGE_ROOT: piRoot,
+              CP06_PI_BIN: join(dirname(dirname(piRoot)), ".bin", "pi"),
               CP06_DUMMY_COUNTERS: counters,
               CP06_DUMMY_SCENARIO: scenario,
             },
@@ -116,6 +120,7 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
             "missing-gap",
             "contradictory-gap",
             "extra-evidence",
+            "constraint-pass",
             "missing-reads",
           ].includes(scenario)
         )

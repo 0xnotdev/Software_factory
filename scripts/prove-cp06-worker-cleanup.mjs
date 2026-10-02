@@ -60,6 +60,8 @@ const cases = await withCleanup(
           PI_OFFLINE: "1",
           PI_SKIP_VERSION_CHECK: "1",
           CP06_PI_AUTH_FILE: source,
+          CP06_PI_PACKAGE_ROOT: process.env.CP06_PI_PACKAGE_ROOT,
+          CP06_PI_BIN: process.env.CP06_PI_BIN,
           CP06_OUTPUT: proofOutput,
           CP06_REVIEWER: "DUMMY cleanup regression",
         },

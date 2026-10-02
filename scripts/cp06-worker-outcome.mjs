@@ -9,9 +9,7 @@ export function auditWorkerOutcome(response, options) {
     "reads",
     "status",
   ];
-  const corrected = Array.isArray(response?.corrected_constraints)
-    ? response.corrected_constraints
-    : [];
+  const corrected = response?.corrected_constraints;
   if (
     response === null ||
     typeof response !== "object" ||
@@ -23,11 +21,10 @@ export function auditWorkerOutcome(response, options) {
     !Array.isArray(response.reads) ||
     response.reads.length !== 1 ||
     response.reads[0] !== options.expectedOriginalPath ||
-    corrected.length !== 1 ||
-    typeof corrected[0] !== "string" ||
-    !/ownership comes only from the authenticated principal/i.test(corrected[0]) ||
-    !/request-supplied owner fields? (?:are )?ignored/i.test(corrected[0]) ||
-    /\b(?:passed|verified|proven|satisfied)\b/i.test(corrected[0])
+    !Array.isArray(corrected) ||
+    corrected.length !== 2 ||
+    corrected[0] !== "ownership comes only from the authenticated principal" ||
+    corrected[1] !== "request-supplied owner fields are ignored"
   ) {
     return { ok: false, reason: "response did not satisfy the targeted-read oracle" };
   }

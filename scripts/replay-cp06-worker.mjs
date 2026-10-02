@@ -117,6 +117,7 @@ async function main() {
     reviewer: process.env.CP06_REVIEWER ?? "Pi CP-06 read-only auth correction worker",
     worker: {
       pi_version: isolated.child.pi_version,
+      pi_install: isolated.child.pi_install,
       interface: "public SDK with injected CredentialStore",
       provider,
       model,

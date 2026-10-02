@@ -17,6 +17,8 @@ for (const scenario of [
   "near-expiry",
   "setup",
   "setup-and-cleanup",
+  "missing-source",
+  "missing-source-and-cleanup",
   "launch",
   "timeout",
   "audit",
@@ -32,6 +34,9 @@ for (const scenario of [
     let cleanups = 0;
     let launches = 0;
     const setupError = new Error("DUMMY setup failed before mount acquired");
+    const missingSourceError = Object.assign(new Error("DUMMY source missing"), {
+      code: "ENOENT",
+    });
     const cleanupError = new Error("DUMMY cleanup failed");
     const run = () =>
       superviseCredentialChild(
@@ -48,6 +53,13 @@ for (const scenario of [
             if (scenario === "setup") throw setupError;
             if (scenario === "setup-and-cleanup") {
               throw new AggregateError([setupError, cleanupError], "DUMMY setup cleanup");
+            }
+            if (scenario === "missing-source") throw missingSourceError;
+            if (scenario === "missing-source-and-cleanup") {
+              throw new AggregateError(
+                [missingSourceError, cleanupError],
+                "DUMMY missing source cleanup",
+              );
             }
             await writeFile(target, "DUMMY placeholder");
             return {
@@ -105,6 +117,29 @@ for (const scenario of [
               ],
             );
           }
+          if (scenario === "missing-source") {
+            assert.equal(error.code, "CP06_CREDENTIAL_SOURCE_MISSING");
+            assert.equal(error.stage, "missing-source");
+            assert.equal(error.exitCode, 70);
+            const wrapped = namespaceWorkerError({
+              status: 70,
+              stderr: JSON.stringify(supervisorFailureRecord(error)),
+            });
+            const blocked = createWorkerBlockedStatus(wrapped, "isolated-sdk-worker");
+            assert.equal(blocked.code, "CP06_CREDENTIAL_SOURCE_MISSING");
+            assert.equal(blocked.failure_stage, "missing-source");
+          }
+          if (scenario === "missing-source-and-cleanup") {
+            const record = supervisorFailureRecord(error);
+            assert.equal(record.code, "CP06_CLEANUP_FAILED");
+            assert.deepEqual(
+              record.causes.map(({ stage, code }) => ({ stage, code })),
+              [
+                { stage: "missing-source", code: "CP06_CREDENTIAL_SOURCE_MISSING" },
+                { stage: "cleanup", code: "CP06_CREDENTIAL_CLEANUP_FAILED" },
+              ],
+            );
+          }
           if (["expired", "near-expiry"].includes(scenario)) {
             assert.equal(error.exitCode, 75);
             assert.equal(error.code, "CP06_AUTH_BLOCKED");
@@ -129,8 +164,14 @@ for (const scenario of [
           return true;
         });
       }
-      assert.equal(cleanups, ["setup", "setup-and-cleanup"].includes(scenario) ? 0 : 1);
-      assert.equal(launches, ["setup", "setup-and-cleanup"].includes(scenario) ? 0 : 1);
+      const failedBeforeLaunch = [
+        "setup",
+        "setup-and-cleanup",
+        "missing-source",
+        "missing-source-and-cleanup",
+      ].includes(scenario);
+      assert.equal(cleanups, failedBeforeLaunch ? 0 : 1);
+      assert.equal(launches, failedBeforeLaunch ? 0 : 1);
       await assert.rejects(stat(target), { code: "ENOENT" });
       assert.equal(await readFile(source, "utf8"), "DUMMY ONLY");
     } finally {
