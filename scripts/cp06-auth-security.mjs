@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 
 export class Cp06IsolationUnsupportedError extends Error {
@@ -171,29 +171,20 @@ export function namespaceWorkerError(result) {
 }
 
 async function runIsolationProbe({ root, outputRoot, mode, binaries }) {
-  const proofRoot = await mkdtemp(join(outputRoot, `DUMMY-${mode}-`));
-  const source = join(proofRoot, "source", "DUMMY-auth.json");
-  const target = join(proofRoot, "agent", "DUMMY-auth.json");
-  await mkdir(dirname(source), { recursive: true });
-  await writeFile(source, "DUMMY ORIGINAL", { mode: 0o600 });
-  try {
-    const result = runNamespace({
-      root,
-      mode,
-      source,
-      target,
-      helper: binaries.helper,
-      syscallProbe: binaries.syscallProbe,
-      childArgs: [],
-      timeout: 90_000,
-    });
-    if (result.status !== 0) {
-      throw unsupported(`${mode} failed: ${String(result.stderr).trim() || result.status}`);
-    }
-    return parseCompactJson(result.stdout, mode);
-  } finally {
-    await rm(proofRoot, { recursive: true, force: true });
+  const result = runNamespace({
+    root,
+    mode,
+    source: outputRoot,
+    target: "-",
+    helper: binaries.helper,
+    syscallProbe: binaries.syscallProbe,
+    childArgs: [],
+    timeout: 90_000,
+  });
+  if (result.status !== 0) {
+    throw unsupported(`${mode} failed: ${String(result.stderr).trim() || result.status}`);
   }
+  return parseCompactJson(result.stdout, mode);
 }
 
 function runNamespace(options) {
@@ -208,7 +199,7 @@ function runNamespace(options) {
     join(options.root, "scripts/cp06-namespace-supervisor.mjs"),
     options.mode,
     resolve(options.source),
-    resolve(options.target),
+    options.mode === "worker" ? resolve(options.target) : "-",
     resolve(options.helper),
     resolve(options.syscallProbe),
     ...options.childArgs.map((value) => resolve(value)),
@@ -241,8 +232,7 @@ function isSupervisorFailure(value, status) {
         cause !== null &&
         typeof cause === "object" &&
         !Array.isArray(cause) &&
-        Object.keys(cause).sort().join(",") ===
-          "code,description,exit_code,stage" &&
+        Object.keys(cause).sort().join(",") === "code,description,exit_code,stage" &&
         SUPERVISOR_FAILURE_CODES.get(cause.code) === cause.stage &&
         cause.description === SUPERVISOR_FAILURE_DESCRIPTIONS[cause.code] &&
         (cause.exit_code === null || Number.isSafeInteger(cause.exit_code)),

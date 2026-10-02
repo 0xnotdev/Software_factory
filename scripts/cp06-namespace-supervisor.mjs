@@ -1,26 +1,32 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mountLiveCredentialReadOnly } from "./cp06-credential-isolation.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
+import { createProbeFixture } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 // Injectable OS operations permit deterministic failure/cleanup tests without
 // credentials, namespaces or an installed SDK in the ordinary unit suite.
 export async function superviseCredentialChild(options, dependencies = {}) {
-  const { mode, source, target, helper, syscallProbe, childArgs = [] } = options;
+  const {
+    mode,
+    source: requestedSource,
+    target: requestedTarget,
+    helper,
+    syscallProbe,
+    childArgs = [],
+  } = options;
   if (
     !["unsafe-probe", "hardened-probe", "worker"].includes(mode) ||
-    ![source, target, helper, syscallProbe].every(
+    ![requestedSource, requestedTarget, helper, syscallProbe].every(
       (value) => typeof value === "string" && value.length > 0,
     )
   )
     throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 64);
-  if (mode === "unsafe-probe" && !isDisposableUnsafeControl(source, target)) {
+  if (mode !== "worker" && (requestedTarget !== "-" || childArgs.length !== 0)) {
     throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 64);
   }
   if (process.platform !== "linux" || process.arch !== "x64") {
@@ -28,142 +34,139 @@ export async function superviseCredentialChild(options, dependencies = {}) {
   }
   const mountCredential = dependencies.mount ?? mountLiveCredentialReadOnly;
   const spawn = dependencies.spawn ?? spawnSync;
-  const beforeHash = mode === "worker" ? null : sha256(readFileSync(source));
+  let probe;
+  if (mode !== "worker") {
+    try {
+      probe = await (dependencies.createProbeFixture ?? createProbeFixture)({
+        root,
+        outputRoot: requestedSource,
+      });
+    } catch (cause) {
+      throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+    }
+  }
+  const source = probe?.source ?? requestedSource;
+  const target = probe?.target ?? requestedTarget;
+  const beforeHash = probe?.beforeHash ?? null;
   let mount;
   return await withCleanup(
-    async () => {
-      try {
-        mount = await mountCredential({
-          root,
-          source,
-          target,
-          protectParents: mode !== "unsafe-probe",
-        });
-      } catch (cause) {
-        const missingSource = hasErrorCode(cause, "ENOENT");
-        const setup = failure(
-          missingSource ? "missing-source" : "setup",
-          missingSource ? "CP06_CREDENTIAL_SOURCE_MISSING" : "CP06_ISOLATION_SETUP_FAILED",
-          missingSource ? 70 : 73,
-          cause,
-        );
-        if (cause instanceof AggregateError) {
-          throw compoundFailure(
-            setup,
-            failure("cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED", 74),
-          );
-        }
-        throw setup;
-      }
-      const command = childCommand({
-        mode,
-        source,
-        target,
-        helper,
-        syscallProbe,
-        childArgs,
-        beforeHash,
-      });
-      let result;
-      try {
-        result = spawn(command.command, command.args, {
-          cwd: root,
-          encoding: "utf8",
-          env: childEnvironment(mode, source, target),
-          timeout: mode === "worker" ? 600_000 : 60_000,
-          maxBuffer: 1024 * 1024,
-        });
-      } catch (cause) {
-        throw failure("launch", "CP06_CHILD_LAUNCH_FAILED", 70, cause);
-      }
-      if (result.error !== undefined) {
-        const timeout = result.error?.code === "ETIMEDOUT";
-        throw failure(
-          timeout ? "timeout" : "launch",
-          timeout ? "CP06_CHILD_TIMEOUT" : "CP06_CHILD_LAUNCH_FAILED",
-          70,
-          result.error,
-        );
-      }
-      if (result.status !== 0) {
-        throw failure(
-          "child-exit",
-          result.status === 75 ? "CP06_AUTH_BLOCKED" : "CP06_CHILD_EXIT_FAILED",
-          result.status ?? 70,
-        );
-      }
+    () =>
+      withCleanup(
+        async () => {
+          try {
+            mount = await mountCredential({
+              root,
+              source,
+              target,
+              protectParents: mode !== "unsafe-probe",
+            });
+          } catch (cause) {
+            const missingSource = hasErrorCode(cause, "ENOENT");
+            const setup = failure(
+              missingSource ? "missing-source" : "setup",
+              missingSource ? "CP06_CREDENTIAL_SOURCE_MISSING" : "CP06_ISOLATION_SETUP_FAILED",
+              missingSource ? 70 : 73,
+              cause,
+            );
+            if (cause instanceof AggregateError) {
+              throw compoundFailure(
+                setup,
+                failure("cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED", 74),
+              );
+            }
+            throw setup;
+          }
+          const command = childCommand({
+            mode,
+            source,
+            target,
+            helper,
+            syscallProbe,
+            childArgs,
+            beforeHash,
+            probe: probe !== undefined,
+          });
+          let result;
+          try {
+            result = spawn(command.command, command.args, {
+              cwd: probe?.cwd ?? root,
+              encoding: "utf8",
+              env: childEnvironment(mode, source, target),
+              timeout: mode === "worker" ? 600_000 : 60_000,
+              maxBuffer: 1024 * 1024,
+            });
+          } catch (cause) {
+            throw failure("launch", "CP06_CHILD_LAUNCH_FAILED", 70, cause);
+          }
+          if (result.error !== undefined) {
+            const timeout = result.error?.code === "ETIMEDOUT";
+            throw failure(
+              timeout ? "timeout" : "launch",
+              timeout ? "CP06_CHILD_TIMEOUT" : "CP06_CHILD_LAUNCH_FAILED",
+              70,
+              result.error,
+            );
+          }
+          if (result.status !== 0) {
+            throw failure(
+              "child-exit",
+              result.status === 75 ? "CP06_AUTH_BLOCKED" : "CP06_CHILD_EXIT_FAILED",
+              result.status ?? 70,
+            );
+          }
 
-      let sourceUnchanged;
-      try {
-        sourceUnchanged =
-          mode === "worker"
-            ? await mount.verifyIntegrity()
-            : beforeHash === sha256(readFileSync(source));
-      } catch {
-        sourceUnchanged = false;
-      }
-      if (!sourceUnchanged && mode !== "unsafe-probe") {
-        throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74);
-      }
-      let childEvidence;
-      try {
-        childEvidence = JSON.parse(String(result.stdout).trim());
-      } catch {
-        throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
-      }
-      return {
-        schema_version: 1,
-        mode,
-        source_unchanged: sourceUnchanged,
-        mount_ids_distinct: mount.mountIds.source !== mount.mountIds.target,
-        parent_roots_read_only: mount.parentMounts.length > 0,
-        cleanup: "pass",
-        child: childEvidence,
-      };
-    },
-    () => mount?.cleanup(),
+          let sourceUnchanged;
+          try {
+            sourceUnchanged =
+              mode === "worker" ? await mount.verifyIntegrity() : probe.sourceUnchanged();
+          } catch {
+            sourceUnchanged = false;
+          }
+          if (!sourceUnchanged && mode !== "unsafe-probe") {
+            throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74);
+          }
+          let childEvidence;
+          try {
+            childEvidence = JSON.parse(String(result.stdout).trim());
+          } catch {
+            throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
+          }
+          return {
+            schema_version: 1,
+            mode,
+            source_unchanged: sourceUnchanged,
+            mount_ids_distinct: mount.mountIds.source !== mount.mountIds.target,
+            parent_roots_read_only: mount.parentMounts.length > 0,
+            cleanup: "pass",
+            child: childEvidence,
+          };
+        },
+        () => mount?.cleanup(),
+      ),
+    () => probe?.cleanup(),
   );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [mode, source, target, helper, syscallProbe, ...childArgs] = process.argv.slice(2);
-  try {
-    console.log(
-      JSON.stringify(
-        await superviseCredentialChild({ mode, source, target, helper, syscallProbe, childArgs }),
-      ),
-    );
-  } catch (error) {
-    process.stderr.write(`${JSON.stringify(supervisorFailureRecord(error))}\n`);
-    process.exitCode = error.exitCode ?? 70;
-  }
-}
-
-function isDisposableUnsafeControl(source, target) {
-  const base = join(root, ".factory/state/cp06-auth-security");
-  const candidate = dirname(dirname(resolve(source)));
-  const name = relative(base, candidate);
-  if (!/^DUMMY-unsafe-probe-[^/]+$/.test(name)) return false;
-  if (resolve(source) !== join(candidate, "source/DUMMY-auth.json")) return false;
-  if (resolve(target) !== join(candidate, "agent/DUMMY-auth.json")) return false;
-  try {
-    return realpathSync(source) === resolve(source) &&
-      realpathSync(candidate) === candidate &&
-      (!existsSync(dirname(target)) || realpathSync(dirname(target)) === dirname(target));
-  } catch {
-    return false;
-  }
-}
-
-function childCommand({ mode, source, target, helper, syscallProbe, childArgs, beforeHash }) {
+function childCommand({
+  mode,
+  source,
+  target,
+  helper,
+  syscallProbe,
+  childArgs,
+  beforeHash,
+  probe,
+}) {
+  const childSource = probe ? "source/DUMMY-auth.json" : source;
+  const childTarget = probe ? "agent/DUMMY-auth.json" : target;
   if (mode === "unsafe-probe") {
     return {
       command: process.execPath,
       args: [
         resolve(root, "scripts/cp06-isolation-adversary.mjs"),
         "unsafe",
-        source,
-        target,
+        childSource,
+        childTarget,
         syscallProbe,
         beforeHash,
         String(process.pid),
@@ -176,8 +179,8 @@ function childCommand({ mode, source, target, helper, syscallProbe, childArgs, b
           process.execPath,
           resolve(root, "scripts/cp06-isolation-adversary.mjs"),
           "hardened",
-          source,
-          target,
+          childSource,
+          childTarget,
           syscallProbe,
           beforeHash,
           String(process.pid),
@@ -260,13 +263,7 @@ function compoundFailure(primary, cleanup) {
 
 function hasErrorCode(error, code) {
   if (error?.code === code) return true;
-  return (
-    error instanceof AggregateError && error.errors.some((cause) => hasErrorCode(cause, code))
-  );
-}
-
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
+  return error instanceof AggregateError && error.errors.some((cause) => hasErrorCode(cause, code));
 }
 
 function classifyFailure(error) {
@@ -307,7 +304,10 @@ const FAILURE_DESCRIPTIONS = {
   CP06_CHILD_LAUNCH_FAILED: { stage: "launch", description: "isolated child launch failed" },
   CP06_CHILD_TIMEOUT: { stage: "timeout", description: "isolated child timed out" },
   CP06_AUTH_BLOCKED: { stage: "child-exit", description: "credential preflight blocked the child" },
-  CP06_CHILD_EXIT_FAILED: { stage: "child-exit", description: "isolated child exited unsuccessfully" },
+  CP06_CHILD_EXIT_FAILED: {
+    stage: "child-exit",
+    description: "isolated child exited unsuccessfully",
+  },
   CP06_SOURCE_IDENTITY_CHANGED: {
     stage: "source-integrity",
     description: "credential source identity changed",
@@ -319,3 +319,17 @@ const FAILURE_DESCRIPTIONS = {
     description: "credential mount cleanup failed",
   },
 };
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [mode, source, target, helper, syscallProbe, ...childArgs] = process.argv.slice(2);
+  try {
+    console.log(
+      JSON.stringify(
+        await superviseCredentialChild({ mode, source, target, helper, syscallProbe, childArgs }),
+      ),
+    );
+  } catch (error) {
+    process.stderr.write(`${JSON.stringify(supervisorFailureRecord(error))}\n`);
+    process.exitCode = error.exitCode ?? 70;
+  }
+}

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import {
   link,
   lstat,
@@ -135,10 +135,7 @@ export async function mountLiveCredentialReadOnly(options) {
         }
         const currentSourceMount = inspectReadOnlyMount(source, { spawn });
         const currentTargetMount = inspectReadOnlyMount(target, { spawn });
-        if (
-          currentSourceMount.id !== sourceMount.id ||
-          currentTargetMount.id !== targetMount.id
-        ) {
+        if (currentSourceMount.id !== sourceMount.id || currentTargetMount.id !== targetMount.id) {
           return false;
         }
         for (const expected of parentMounts) {
@@ -234,7 +231,7 @@ export function inspectReadOnlyMount(path, options = {}) {
   const optionsList = String(entry?.["vfs-options"] ?? "").split(",");
   if (
     entry === undefined ||
-    resolve(entry.target) !== resolve(path) ||
+    resolve(entry.target) !== realpathSync(path) ||
     !REQUIRED_VFS_OPTIONS.every((option) => optionsList.includes(option))
   ) {
     throw new Error(`credential mount lacks required read-only VFS flags: ${path}`);

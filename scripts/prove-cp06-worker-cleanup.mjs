@@ -26,8 +26,9 @@ const cases = await withCleanup(
       const home = join(scratch, scenario);
       const temporary = join(home, "tmp");
       const proofOutput = join(home, "proofs");
-      const source = join(home, "DUMMY-auth.json");
+      const source = join(home, "credential", "DUMMY-auth.json");
       await mkdir(temporary, { recursive: true });
+      await mkdir(join(home, "credential"), { recursive: true });
       const sourceBytes = JSON.stringify({
         "openai-codex": {
           type: "oauth",
@@ -47,7 +48,10 @@ const cases = await withCleanup(
         join(proofOutput, "ten-pack/repo/docs/AUTH.md"),
         await readFile(join(root, "test/fixtures/cp06-context/docs/AUTH.md")),
       );
-      const args = [join(root, "scripts/replay-cp06-worker.mjs")];
+      const args = [
+        "--experimental-import-meta-resolve",
+        join(root, "scripts/replay-cp06-worker.mjs"),
+      ];
       const result = spawnSync(process.execPath, args, {
         cwd: root,
         encoding: "utf8",

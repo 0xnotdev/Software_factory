@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -181,38 +183,95 @@ for (const scenario of [
   });
 }
 
-test("unsafe mode accepts only disposable DUMMY control and records observed mutation", async () => {
-  const base = join(process.cwd(), ".factory/state/cp06-auth-security");
-  await mkdir(base, { recursive: true });
-  const directory = await mkdtemp(join(base, "DUMMY-unsafe-probe-test-"));
-  const source = join(directory, "source/DUMMY-auth.json");
-  const target = join(directory, "agent/DUMMY-auth.json");
-  let launched = 0;
+test("both probe modes require a supervisor-generated DUMMY fixture", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-probe-test-"));
+  const source = join(directory, "DUMMY-auth.json");
+  const secret = join(directory, "DUMMY-sentinel-secret.json");
+  const outputRoot = resolve(".factory/state/cp06-correction/auth-security");
+  await writeFile(secret, "DUMMY SECRET NEVER READ");
   try {
-    await mkdir(join(directory, "source"));
-    await writeFile(source, "DUMMY original");
-    const options = { mode: "unsafe-probe", source, target, helper: "/DUMMY-helper", syscallProbe: "/DUMMY-probe" };
-    await assert.rejects(
-      superviseCredentialChild({ ...options, source: join(directory, "source/not-allowed") }, {
-        mount() { launched++; },
-      }),
-      { code: "CP06_ISOLATION_SETUP_FAILED" },
-    );
-    assert.equal(launched, 0);
-    const result = await superviseCredentialChild(options, {
-      mount() {
-        return { mountIds: { source: "1", target: "2" }, parentMounts: [], cleanup() {} };
-      },
-      spawn() {
-        launched++;
-        writeFileSync(source, "DUMMY mutated");
-        return { status: 0, stdout: '{"result":"DUMMY"}' };
-      },
-    });
-    assert.equal(result.source_unchanged, false);
-    assert.equal(result.mode, "unsafe-probe");
-    assert.equal(launched, 1);
+    for (const mode of ["unsafe-probe", "hardened-probe"]) {
+      await writeFile(source, "DUMMY ORIGINAL");
+      let prepared = 0;
+      let mounts = 0;
+      let launches = 0;
+      const options = {
+        mode,
+        source: outputRoot,
+        target: "-",
+        helper: "/DUMMY-helper",
+        syscallProbe: "/DUMMY-probe",
+      };
+      const dependencies = {
+        async createProbeFixture({ outputRoot: selected }) {
+          prepared++;
+          assert.equal(selected, outputRoot);
+          return {
+            source,
+            target: join(directory, "DUMMY-target"),
+            beforeHash: "DUMMY-hash",
+            sourceUnchanged: () => mode !== "unsafe-probe",
+            cleanup() {},
+          };
+        },
+        mount() {
+          mounts++;
+          return { mountIds: { source: "1", target: "2" }, parentMounts: [], cleanup() {} };
+        },
+        spawn() {
+          launches++;
+          if (mode === "unsafe-probe") writeFileSync(source, "DUMMY mutated");
+          return { status: 0, stdout: '{"result":"DUMMY"}' };
+        },
+      };
+      await assert.rejects(superviseCredentialChild({ ...options, target: secret }, dependencies), {
+        code: "CP06_ISOLATION_SETUP_FAILED",
+      });
+      assert.equal(prepared, 0);
+      const result = await superviseCredentialChild(options, dependencies);
+      assert.equal(result.source_unchanged, mode === "hardened-probe");
+      assert.equal(prepared, 1);
+      assert.equal(mounts, 1);
+      assert.equal(launches, 1);
+    }
+    assert.equal(await readFile(secret, "utf8"), "DUMMY SECRET NEVER READ");
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the probe executable refuses arbitrary and symlinked DUMMY roots before access", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-probe-refusal-"));
+  const secret = join(directory, "DUMMY-sentinel-secret.json");
+  const base = resolve(".factory/state/cp06-correction");
+  const alias = join(base, "auth-security-DUMMY-alias");
+  await mkdir(base, { recursive: true });
+  await writeFile(secret, "DUMMY SECRET NEVER READ");
+  await mkdir(join(directory, "auth-security"));
+  await symlink(directory, alias);
+  try {
+    for (const mode of ["unsafe-probe", "hardened-probe"]) {
+      for (const requested of [secret, join(alias, "auth-security")]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            resolve("scripts/cp06-namespace-supervisor.mjs"),
+            mode,
+            requested,
+            "-",
+            "/DUMMY-helper",
+            "/DUMMY-probe",
+          ],
+          { encoding: "utf8", timeout: 10_000 },
+        );
+        assert.equal(result.status, 73);
+        assert.equal(result.stdout, "");
+        assert.equal(JSON.parse(result.stderr).code, "CP06_ISOLATION_SETUP_FAILED");
+      }
+    }
+    assert.equal(await readFile(secret, "utf8"), "DUMMY SECRET NEVER READ");
+  } finally {
+    await rm(alias);
     await rm(directory, { recursive: true, force: true });
   }
 });
