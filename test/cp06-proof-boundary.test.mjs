@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -13,7 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { runDummySdkProof, runIsolationProbe } from "../scripts/cp06-auth-security.mjs";
+import {
+  compileIsolationHelpers,
+  runDummySdkProof,
+  runIsolationProbe,
+} from "../scripts/cp06-auth-security.mjs";
 import { openAnchoredDirectory, openProbeOutput } from "../scripts/cp06-probe-fixture.mjs";
 
 const runners = [
@@ -147,7 +152,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       refresh_callbacks: 0,
       credential_store: credentialAudit(),
     },
-    sdk_dependency: { version: "0.85.1", package_sha256: "1".repeat(64) },
+    sdk_dependency: sdkDependency(),
     actual_sdk_outcomes: {
       fixture_origin: true,
       semantic_acceptance: false,
@@ -176,6 +181,14 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     { ...validBase, auth_cases: [] },
     { ...validBase, auth_cases: [...validBase.auth_cases, authCase("expired", "blocked", 0)] },
     { ...validBase, extra: "DUMMY-SECRET" },
+    { ...validBase, sdk_dependency: { ...validBase.sdk_dependency, version: "0.99.2" } },
+    {
+      ...validBase,
+      actual_sdk_outcomes: {
+        ...validBase.actual_sdk_outcomes,
+        cases: [{ ...validBase.actual_sdk_outcomes.cases[0], forged: "DUMMY-SECRET" }],
+      },
+    },
     { ...validBase, sdk_worker: { ...validBase.sdk_worker, active_tools: ["read", "write"] } },
   ]) {
     assert.throws(
@@ -200,6 +213,38 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     },
   });
   assert.equal(accepted.result, "pass");
+});
+
+test("helper compilation ignores preexisting symlinked artifact leaves", async () => {
+  const root = process.cwd();
+  const outputRoot = resolve(".factory/state/auth-security/DUMMY-compile");
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-compile-external-"));
+  const sentinel = join(external, "DUMMY-sentinel");
+  const output = openProbeOutput({ root, outputRoot, create: true });
+  await writeFile(sentinel, "DUMMY sentinel unchanged");
+  await symlink(sentinel, join(output.anchor, "cp06-seccomp-exec"));
+  await symlink(sentinel, join(output.anchor, "cp06-isolation-syscalls"));
+  let binaries;
+  try {
+    binaries = compileIsolationHelpers({
+      root,
+      outputRoot,
+      anchoredOutputRoot: output.anchor,
+      spawnSyncImpl(_command, args) {
+        const outputPath = args[args.indexOf("-o") + 1];
+        writeFileSync(outputPath, "DUMMY compiled helper");
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY sentinel unchanged");
+    assert.equal(readFileSync(binaries.helper, "utf8"), "DUMMY compiled helper");
+    assert.equal(readFileSync(binaries.syscallProbe, "utf8"), "DUMMY compiled helper");
+  } finally {
+    binaries?.close?.();
+    output.close();
+    await rm(outputRoot, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
 });
 
 test("anchored runner child directories do not follow substituted paths", async () => {
@@ -241,15 +286,38 @@ function credentialAudit() {
   return { reads: 1, lists: 0, modify_denials: 1, delete_denials: 1 };
 }
 
-function outcome(scenario, exitCode, extra = {}) {
+function sdkDependency() {
   return {
+    entry: "/DUMMY/pi-ai/dist/index.js",
+    entry_sha256: "2".repeat(64),
+    manifest_sha256: "3".repeat(64),
+    name: "@earendil-works/pi-ai",
+    package_sha256: "1".repeat(64),
+    resolution: "esm-import-condition",
+    root: "/DUMMY/pi-ai",
+    tarball_integrity: "sha512-DUMMY",
+    version: "0.85.1",
+  };
+}
+
+function outcome(scenario, exitCode, extra = {}) {
+  const result = {
     scenario,
     exit_code: exitCode,
     expected_exit_code: exitCode,
+    exit: exitCode,
+    fixture_origin: true,
+    sdk_dependency: sdkDependency(),
     default_storage: 0,
     network: 0,
     refresh: 0,
+    to_auth: ["expired", "near-expiry"].includes(scenario) ? 0 : 1,
+    runtime_create: ["expired", "near-expiry"].includes(scenario) ? 0 : 1,
     source_unchanged: true,
     ...extra,
   };
+  if (["valid", "fenced-valid"].includes(scenario)) {
+    result.read_audit = { exact_original: true, read_count: 1 };
+  }
+  return result;
 }

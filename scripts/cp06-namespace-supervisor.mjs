@@ -60,6 +60,10 @@ export async function superviseCredentialChild(options, dependencies = {}) {
               source,
               target,
               protectParents: mode !== "unsafe-probe",
+              sourceParentAnchor: probe?.credentialAnchors?.sourceParent,
+              targetParentAnchor: probe?.credentialAnchors?.targetParent,
+              sourceLeaf: probe?.credentialAnchors?.sourceLeaf,
+              targetLeaf: probe?.credentialAnchors?.targetLeaf,
             });
           } catch (cause) {
             const missingSource = hasErrorCode(cause, "ENOENT");

@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, constants, openSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -99,6 +100,86 @@ test("live credential mount pins one inode behind distinct read-only regular mou
       assert.match(path, new RegExp(`^/proc/${process.pid}/fd/\\d+`));
     }
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("credential mount consumes retained parent descriptors after path substitution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "factory-cp06-retained-mount-test-"));
+  const sourceDir = join(root, "source");
+  const targetDir = join(root, "agent");
+  const maliciousDir = join(root, "malicious");
+  await mkdir(sourceDir);
+  await mkdir(targetDir);
+  await mkdir(maliciousDir);
+  const source = join(sourceDir, "auth.json");
+  const target = join(targetDir, "auth.json");
+  await writeFile(source, "DUMMY original");
+  await writeFile(join(maliciousDir, "auth.json"), "DUMMY malicious");
+  const sourceFd = openSync(
+    sourceDir,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const targetFd = openSync(
+    targetDir,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const sourceAnchor = `/proc/${process.pid}/fd/${sourceFd}`;
+  const targetAnchor = `/proc/${process.pid}/fd/${targetFd}`;
+  const sourceStat = await lstat(source, { bigint: true });
+  const calls = [];
+  let mountId = 90;
+  const mountIds = new Map();
+  const spawnSyncImpl = (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "findmnt") {
+      const path = args.at(-1);
+      if (!mountIds.has(path)) mountIds.set(path, ++mountId);
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          filesystems: [
+            { id: mountIds.get(path), target: path, "vfs-options": "ro,nosuid,nodev,noexec" },
+          ],
+        }),
+        stderr: "",
+      };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const lstatImpl = async (path, options) =>
+    String(path).endsWith("/auth.json") ? sourceStat : lstat(path, options);
+  try {
+    await rename(sourceDir, join(root, "source-moved"));
+    await symlink(maliciousDir, sourceDir);
+    const mount = await mountLiveCredentialReadOnly({
+      root,
+      source,
+      target,
+      sourceParentAnchor: sourceAnchor,
+      targetParentAnchor: targetAnchor,
+      sourceLeaf: "auth.json",
+      targetLeaf: "auth.json",
+      spawnSyncImpl,
+      lstatImpl,
+    });
+    try {
+      const mountCallsOnly = calls.filter(([command]) => command === "mount");
+      assert.match(
+        mountCallsOnly[4][3],
+        new RegExp(`^/proc/${process.pid}/fd/${sourceFd}/auth\\.json$`),
+      );
+      assert.match(
+        mountCallsOnly[6][3],
+        new RegExp(`^/proc/${process.pid}/fd/${targetFd}/auth\\.json$`),
+      );
+      assert.equal(await readFile(join(maliciousDir, "auth.json"), "utf8"), "DUMMY malicious");
+    } finally {
+      await mount.cleanup();
+    }
+  } finally {
+    closeSync(sourceFd);
+    closeSync(targetFd);
     await rm(root, { recursive: true, force: true });
   }
 });

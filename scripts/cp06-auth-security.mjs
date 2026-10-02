@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, mkdtempSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 import { openProbeOutput } from "./cp06-probe-fixture.mjs";
@@ -108,56 +108,70 @@ export function verifyIsolationPrerequisites(options = {}) {
 export function compileIsolationHelpers(options) {
   const root = resolve(options.root);
   const outputRoot = resolve(options.outputRoot);
-  const helper = join(outputRoot, "cp06-seccomp-exec");
-  const syscallProbe = join(outputRoot, "cp06-isolation-syscalls");
-  const anchoredHelper = join(options.anchoredOutputRoot ?? outputRoot, "cp06-seccomp-exec");
-  const anchoredSyscallProbe = join(
-    options.anchoredOutputRoot ?? outputRoot,
-    "cp06-isolation-syscalls",
+  const artifactRoot = mkdtempSync(join(options.anchoredOutputRoot ?? outputRoot, "helpers-"));
+  const artifactFd = openSync(
+    artifactRoot,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
   );
-  checked(
-    "cc",
-    [
-      "-std=c11",
-      "-O2",
-      "-Wall",
-      "-Wextra",
-      "-Werror",
-      join(root, "scripts/cp06-seccomp-exec.c"),
-      "-Wl,-l:libseccomp.so.2",
-      "-o",
-      anchoredHelper,
-    ],
-    root,
-  );
-  checked(
-    "cc",
-    [
-      "-std=c11",
-      "-O2",
-      "-Wall",
-      "-Wextra",
-      "-Werror",
-      join(root, "scripts/cp06-isolation-syscalls.c"),
-      "-o",
-      anchoredSyscallProbe,
-    ],
-    root,
-  );
-  const helperFd = openSync(anchoredHelper, constants.O_RDONLY | constants.O_NOFOLLOW);
-  const syscallProbeFd = openSync(anchoredSyscallProbe, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let closed = false;
-  return {
-    helper: `/proc/${process.pid}/fd/${helperFd}`,
-    syscallProbe: `/proc/${process.pid}/fd/${syscallProbeFd}`,
-    outputPaths: { helper, syscallProbe },
-    close() {
-      if (closed) return;
-      closed = true;
-      closeSync(helperFd);
-      closeSync(syscallProbeFd);
-    },
-  };
+  const artifactAnchor = `/proc/${process.pid}/fd/${artifactFd}`;
+  const helper = join(artifactAnchor, "cp06-seccomp-exec");
+  const syscallProbe = join(artifactAnchor, "cp06-isolation-syscalls");
+  const spawn = options.spawnSyncImpl ?? spawnSync;
+  let helperFd;
+  let syscallProbeFd;
+  try {
+    checked(
+      "cc",
+      [
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        join(root, "scripts/cp06-seccomp-exec.c"),
+        "-Wl,-l:libseccomp.so.2",
+        "-o",
+        helper,
+      ],
+      root,
+      spawn,
+    );
+    checked(
+      "cc",
+      [
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        join(root, "scripts/cp06-isolation-syscalls.c"),
+        "-o",
+        syscallProbe,
+      ],
+      root,
+      spawn,
+    );
+    helperFd = openSync(helper, constants.O_RDONLY | constants.O_NOFOLLOW);
+    syscallProbeFd = openSync(syscallProbe, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let closed = false;
+    closeSync(artifactFd);
+    return {
+      helper: `/proc/${process.pid}/fd/${helperFd}`,
+      syscallProbe: `/proc/${process.pid}/fd/${syscallProbeFd}`,
+      outputPaths: { helper, syscallProbe },
+      close() {
+        if (closed) return;
+        closed = true;
+        closeSync(helperFd);
+        closeSync(syscallProbeFd);
+      },
+    };
+  } catch (error) {
+    if (helperFd !== undefined) closeSync(helperFd);
+    if (syscallProbeFd !== undefined) closeSync(syscallProbeFd);
+    closeSync(artifactFd);
+    throw error;
+  }
 }
 
 export async function runIsolatedWorker(options) {
@@ -532,15 +546,32 @@ function validateSdkWorker(worker) {
 }
 
 function validateSdkDependency(dependency) {
+  assertExactKeys(dependency, [
+    "entry",
+    "entry_sha256",
+    "manifest_sha256",
+    "name",
+    "package_sha256",
+    "resolution",
+    "root",
+    "tarball_integrity",
+    "version",
+  ]);
+  assert(dependency.name === "@earendil-works/pi-ai", "DUMMY SDK dependency name mismatch");
+  assert(dependency.version === "0.85.1", "DUMMY SDK dependency version mismatch");
   assert(
-    dependency !== null && typeof dependency === "object" && !Array.isArray(dependency),
-    "DUMMY SDK dependency missing",
+    dependency.resolution === "esm-import-condition",
+    "DUMMY SDK dependency resolution mismatch",
   );
-  assert(
-    typeof dependency.version === "string" && dependency.version.length > 0,
-    "DUMMY SDK dependency version missing",
-  );
-  assert(isSha256(dependency.package_sha256), "DUMMY SDK dependency digest missing");
+  for (const key of ["entry", "root", "tarball_integrity"]) {
+    assert(
+      typeof dependency[key] === "string" && dependency[key].length > 0,
+      "DUMMY SDK dependency path missing",
+    );
+  }
+  for (const key of ["entry_sha256", "manifest_sha256", "package_sha256"]) {
+    assert(isSha256(dependency[key]), "DUMMY SDK dependency digest missing");
+  }
 }
 
 function validateOutcomeProof(outcomes) {
@@ -575,18 +606,49 @@ function validateOutcomeProof(outcomes) {
       expectedExit !== undefined && !seen.has(entry.scenario),
       "DUMMY outcome scenario mismatch",
     );
+    const expectedKeys = [
+      "default_storage",
+      "exit",
+      "expected_exit_code",
+      "exit_code",
+      "fixture_origin",
+      "network",
+      "refresh",
+      "runtime_create",
+      "scenario",
+      "sdk_dependency",
+      "source_unchanged",
+      "to_auth",
+    ];
+    if (["valid", "fenced-valid"].includes(entry.scenario)) expectedKeys.push("read_audit");
+    assertExactKeys(entry, expectedKeys);
     seen.add(entry.scenario);
     assert(
-      entry.exit_code === expectedExit && entry.expected_exit_code === expectedExit,
+      entry.exit_code === expectedExit &&
+        entry.expected_exit_code === expectedExit &&
+        entry.exit === expectedExit,
       "DUMMY outcome exit mismatch",
     );
+    assert(entry.fixture_origin === true, "DUMMY outcome fixture origin missing");
+    validateSdkDependency(entry.sdk_dependency);
     assert(entry.source_unchanged === true, "DUMMY outcome source changed");
     assert(
       entry.default_storage === 0 && entry.network === 0 && entry.refresh === 0,
       "DUMMY outcome side effect occurred",
     );
     if (["expired", "near-expiry"].includes(entry.scenario)) {
-      assert(entry.runtime_create === 0, "DUMMY expired auth reached runtime creation");
+      assert(
+        entry.runtime_create === 0 && entry.to_auth === 0,
+        "DUMMY expired auth reached runtime creation",
+      );
+    }
+    if (["valid", "fenced-valid"].includes(entry.scenario)) {
+      assert(
+        entry.runtime_create === 1 && entry.to_auth === 1,
+        "DUMMY valid auth did not run exactly once",
+      );
+      assert(entry.read_audit?.exact_original === true, "DUMMY outcome exact read missing");
+      assert(entry.read_audit?.read_count === 1, "DUMMY outcome read count mismatch");
     }
   }
   assert(seen.size === expected.size, "DUMMY outcome cases incomplete");
@@ -628,8 +690,8 @@ function resolvePiPackage(root, options) {
   }
 }
 
-function checked(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 60_000 });
+function checked(command, args, cwd, spawn = spawnSync) {
+  const result = spawn(command, args, { cwd, encoding: "utf8", timeout: 60_000 });
   if (result.error !== undefined || result.status !== 0) {
     throw unsupported(`required command failed: ${command}`);
   }

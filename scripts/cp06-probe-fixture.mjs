@@ -131,7 +131,7 @@ export function openAnchoredDirectory(
 }
 
 export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }) {
-  const output = openProbeOutput({ root, outputRoot });
+  const output = openProbeOutput({ root, outputRoot, create: true });
   let rootFd;
   let sourceDirFd;
   let agentDirFd;
@@ -168,6 +168,12 @@ export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }
       target,
       cwd: anchoredRoot,
       beforeHash,
+      credentialAnchors: {
+        sourceParent: `/proc/${process.pid}/fd/${sourceDirFd}`,
+        targetParent: `/proc/${process.pid}/fd/${agentDirFd}`,
+        sourceLeaf: "DUMMY-auth.json",
+        targetLeaf: "DUMMY-auth.json",
+      },
       assertSafePaths({ mounted = false } = {}) {
         if (
           !sameInode(sourceParent, lstatSync(join(anchoredRoot, "source"), { bigint: true })) ||

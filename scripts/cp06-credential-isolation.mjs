@@ -71,6 +71,8 @@ export async function mountLiveCredentialReadOnly(options) {
   let handle;
   let sourceParentHandle;
   let targetParentHandle;
+  let closeSourceParentHandle = true;
+  let closeTargetParentHandle = true;
   let sourceMounted = false;
   let targetMounted = false;
   let sourceMountPath = source;
@@ -78,12 +80,17 @@ export async function mountLiveCredentialReadOnly(options) {
   const mountedParents = [];
   let parentHandlesTransferred = false;
   try {
-    sourceParentHandle = await open(
-      dirname(source),
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-    );
-    const sourceParentPath = `/proc/${process.pid}/fd/${sourceParentHandle.fd}`;
-    sourceMountPath = join(sourceParentPath, basename(source));
+    let sourceParentPath = options.sourceParentAnchor;
+    if (sourceParentPath === undefined) {
+      sourceParentHandle = await open(
+        dirname(source),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      sourceParentPath = `/proc/${process.pid}/fd/${sourceParentHandle.fd}`;
+    } else {
+      closeSourceParentHandle = false;
+    }
+    sourceMountPath = join(sourceParentPath, options.sourceLeaf ?? basename(source));
     handle = await open(
       sourceMountPath,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
@@ -92,13 +99,18 @@ export async function mountLiveCredentialReadOnly(options) {
     const named = await statPath(sourceMountPath, { bigint: true });
     assertPinnedRegularFile(pinned, named, maxBytes);
 
-    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    targetParentHandle = await open(
-      dirname(target),
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-    );
-    const targetParentPath = `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
-    targetMountPath = join(targetParentPath, basename(target));
+    let targetParentPath = options.targetParentAnchor;
+    if (targetParentPath === undefined) {
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      targetParentHandle = await open(
+        dirname(target),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+      );
+      targetParentPath = `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
+    } else {
+      closeTargetParentHandle = false;
+    }
+    targetMountPath = join(targetParentPath, options.targetLeaf ?? basename(target));
     await writeFile(targetMountPath, "", { flag: "wx", mode: 0o600 });
     const parentMounts = [];
     if (protectParents) {
@@ -176,12 +188,12 @@ export async function mountLiveCredentialReadOnly(options) {
         }
         const closeFailures = [];
         try {
-          await sourceParentHandle?.close();
+          if (closeSourceParentHandle) await sourceParentHandle?.close();
         } catch (error) {
           closeFailures.push(error?.message ?? "source parent close failed");
         }
         try {
-          await targetParentHandle?.close();
+          if (closeTargetParentHandle) await targetParentHandle?.close();
         } catch (error) {
           closeFailures.push(error?.message ?? "target parent close failed");
         }
@@ -210,8 +222,8 @@ export async function mountLiveCredentialReadOnly(options) {
   } finally {
     await handle?.close();
     if (!parentHandlesTransferred) {
-      await sourceParentHandle?.close();
-      await targetParentHandle?.close();
+      if (closeSourceParentHandle) await sourceParentHandle?.close();
+      if (closeTargetParentHandle) await targetParentHandle?.close();
     }
   }
 }
