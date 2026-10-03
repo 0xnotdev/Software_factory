@@ -89,9 +89,7 @@ export function assertAllowedRead(args, expectedOriginalPath, completeLineLimit 
   if (hasOffset !== hasLimit) throw new Error("read denied: incomplete explicit range");
   if (
     hasOffset &&
-    (args.offset !== 1 ||
-      !Number.isSafeInteger(args.limit) ||
-      args.limit < completeLineLimit)
+    (args.offset !== 1 || !Number.isSafeInteger(args.limit) || args.limit < completeLineLimit)
   ) {
     throw new Error("read denied: explicit range must cover the complete original");
   }

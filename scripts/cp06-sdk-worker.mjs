@@ -16,11 +16,7 @@ try {
   const credentialTarget = resolve(credentialTargetArg);
   const input = JSON.parse(await readFile(resolve(inputPathArg), "utf8"));
   validateInput(input);
-  const paths = canonicalWorkerPaths(
-    input,
-    credentialTarget,
-    process.env.CP06_CREDENTIAL_SOURCE,
-  );
+  const paths = canonicalWorkerPaths(input, credentialTarget, process.env.CP06_CREDENTIAL_SOURCE);
   const pi = resolvePiPackage();
   const sdk = await import(pathToFileURL(join(pi.root, "dist/index.js")));
   assertSdkSurface(sdk);

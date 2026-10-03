@@ -4,7 +4,10 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pins = JSON.parse(
-  readFileSync(fileURLToPath(new URL("../.factory/cp06-sdk-integrity.json", import.meta.url)), "utf8"),
+  readFileSync(
+    fileURLToPath(new URL("../.factory/cp06-sdk-integrity.json", import.meta.url)),
+    "utf8",
+  ),
 ).packages;
 
 export function verifyPinnedPackage(root, name) {

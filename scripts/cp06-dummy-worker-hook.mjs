@@ -91,11 +91,12 @@ sdk.ModelRuntime.create = async function (options) {
         ? input.symlink_path
         : input.original_path;
   const jsonResponse = JSON.stringify(response);
-  const responseText = scenario === "extra-before-fence"
-    ? `Creation verified and passed\n\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
-    : scenario === "fenced-valid"
-      ? `\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
-      : jsonResponse;
+  const responseText =
+    scenario === "extra-before-fence"
+      ? `Creation verified and passed\n\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
+      : scenario === "fenced-valid"
+        ? `\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
+        : jsonResponse;
   faux.setResponses([
     ai.fauxAssistantMessage(
       ai.fauxToolCall("read", { path: readPath }, { id: "DUMMY-actual-worker-read" }),

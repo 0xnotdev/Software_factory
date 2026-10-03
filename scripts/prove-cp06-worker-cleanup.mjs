@@ -86,7 +86,9 @@ const cases = await withCleanup(
       assert.deepEqual(await readdir(temporary), [], `${scenario}: evaluation home leaked`);
       if (scenario !== "missing-source-setup")
         assert.equal(await readFile(source, "utf8"), sourceBytes);
-      await assert.rejects(readFile(join(proofOutputPath, "worker/evidence.json")), { code: "ENOENT" });
+      await assert.rejects(readFile(join(proofOutputPath, "worker/evidence.json")), {
+        code: "ENOENT",
+      });
       proofOutputDirectory.close();
       cases.push({
         scenario,

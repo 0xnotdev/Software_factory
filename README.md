@@ -1,6 +1,6 @@
 # Factory: build package
 
-**Status:** implementation specification, 26 September 2026. No Factory software is claimed to exist yet.
+**Status:** development CLI with CP-06 corrections in progress. Product completion requires the independent gates in [COMPLETION.md](COMPLETION.md); checkpoint state is owned by [BUILD_PLAN.md](BUILD_PLAN.md).
 
 Factory is a thin layer for turning a software product brief into independently verifiable work for an existing Pi + Firstmate setup. Its purpose is to minimize the intelligence, context, and human attention required to transform intent into verified software.
 
@@ -14,11 +14,21 @@ Factory is a thin layer for turning a software product brief into independently 
 
 Read [docs/CONTRACTS.md](docs/CONTRACTS.md) when implementing validation, [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) when touching CTX/Pi/Firstmate, [docs/WORKFLOW.md](docs/WORKFLOW.md) when designing the Factory skill, and [docs/RESEARCH.md](docs/RESEARCH.md) for sources and decisions. [docs/BOOTSTRAP_PROMPTS.md](docs/BOOTSTRAP_PROMPTS.md) contains copyable Pi instructions for the initial checkpoints.
 
-## Repository bootstrap
+## Common usage
 
-Create an empty Git repository for Factory and copy this directory's contents to its root. Do not copy an archived CTX repository or a Firstmate home into it. Review the files, resolve only genuine product decisions, then use your existing `/CTX startup` workflow to index the authoritative Markdown. Begin CP-00 from [BUILD_PLAN.md](BUILD_PLAN.md). The current workspace contains documents only; commands described here are target behavior, not commands that already run.
+From this source checkout:
 
-The baseline interaction is your current research → project truth → checkpoint → worker → independent review process. Once validation and task publication work, use Factory's own backlog to build later checkpoints. Do not assert that dogfooding happened until a real Firstmate worker receives, executes, and closes a Factory task.
+```sh
+npm ci
+npm run build
+node dist/src/cli.js --help
+node dist/src/cli.js validate --root <project-root> --json
+node dist/src/cli.js context <TASK-ID> --root <project-root> --json
+```
+
+Prepare reviewed contracts and a deliberate offline CTX authority set first; see [docs/CONTRACTS.md](docs/CONTRACTS.md) and the [Factory skill](skills/factory/SKILL.md) for the workflow and named-home publication safeguards. Do not copy an archived CTX repository or a Firstmate home into a target project. Factory does not dispatch workers or choose delivery policy.
+
+CP-06's development proof commands, exact SDK requirements, evidence interpretation, and platform limits are owned by [docs/probes/CP-06.md](docs/probes/CP-06.md). A DUMMY proof or closed backlog is not product completion.
 
 ## Document authority
 

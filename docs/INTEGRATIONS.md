@@ -8,7 +8,7 @@ The user's archived CTX README describes a Python 3.12+ local CLI, source-proven
 
 CP-00 probes: detect `ctx`; create a disposable Git fixture with two normative Markdown docs; initialize and add docs according to local `ctx --help`; index with `--no-embeddings` so the test does not download anything; run status, offline doctor, pack, and exact lines; record actual JSON fields and failure codes. Confirm stale-source detection by changing a source after indexing. A user's globally installed model may then be tested separately. Do not index the Factory repo until its initial documents are approved.
 
-Context policy: required files are read exactly. The installed `ctx pack` accepts repeated `--document` filters; Factory supplies the task's reviewed `context.required` paths so retrieval ranks only within task-local authority while exact originals remain in the pack. If that valid selection is empty, Factory supplies the project's mandatory `documents.required` paths; it never sends an unfiltered pack request. Changed docs invalidate a pack; unavailable local embedding may allow the explicitly reported lexical mode if it retrieves sufficient authority. Query text is data, never shell code. `ctx pack` is one context source, not a substitute for Git, `rg`, or project checks, and Factory does not post-filter CTX output to falsify provenance.
+The installed `ctx pack` accepts repeated `--document` filters. Factory's selection contract is owned by [CONTRACTS.md](CONTRACTS.md#task-factorytaskssave-001yaml); provenance verification and blocking behavior are owned by [ARCHITECTURE.md](../ARCHITECTURE.md#ctx-context-pack). Query text is data, never shell code. `ctx pack` is one context source, not a substitute for Git, `rg`, or project checks.
 
 ## Pi
 

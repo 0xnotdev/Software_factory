@@ -467,7 +467,10 @@ export function runDummySdkProof({
     throw unsupported(`DUMMY SDK proof failed: ${code}`);
   }
   const trustedDependency = expectedSdkDependency ?? resolvePinnedPiAi(piRoot).provenance;
-  return validateDummySdkProof(parseCompactJson(result.stdout, "DUMMY SDK proof"), trustedDependency);
+  return validateDummySdkProof(
+    parseCompactJson(result.stdout, "DUMMY SDK proof"),
+    trustedDependency,
+  );
 }
 
 function validateDummySdkProof(proof, trustedDependency) {
