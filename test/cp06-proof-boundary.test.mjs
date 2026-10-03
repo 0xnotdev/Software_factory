@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -25,6 +25,7 @@ const runners = [
   "scripts/replay-cp06-worker.mjs",
   "scripts/replay-cp06-ten-pack.mjs",
   "scripts/replay-cp06-p07.mjs",
+  "scripts/prove-cp06-worker-cleanup.mjs",
 ];
 
 test("all proof runners reject external and symlinked output before removing artifacts", async () => {
@@ -32,7 +33,7 @@ test("all proof runners reject external and symlinked output before removing art
   const base = resolve(".factory/state/cp06-correction");
   const alias = join(base, "DUMMY-output-alias");
   await mkdir(base, { recursive: true });
-  for (const name of ["worker", "ten-pack", "p07"]) {
+  for (const name of ["worker", "ten-pack", "p07", "worker-cleanup"]) {
     await mkdir(join(external, name));
     await writeFile(join(external, name, "DUMMY-sentinel"), "DUMMY-SECRET-UNCHANGED");
   }
@@ -49,7 +50,7 @@ test("all proof runners reject external and symlinked output before removing art
         assert.notEqual(result.status, 0, `${runner} accepted ${output}`);
         assert.equal(result.stdout.includes("DUMMY-SECRET-UNCHANGED"), false);
         assert.equal(result.stderr.includes("DUMMY-SECRET-UNCHANGED"), false);
-        for (const name of ["worker", "ten-pack", "p07"]) {
+        for (const name of ["worker", "ten-pack", "p07", "worker-cleanup"]) {
           assert.deepEqual(await readdir(join(external, name)), ["DUMMY-sentinel"]);
           assert.equal(
             await readFile(join(external, name, "DUMMY-sentinel"), "utf8"),
@@ -135,6 +136,7 @@ test("failed DUMMY probes never forward child output or spawn exceptions", async
 });
 
 test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
+  const trustedDependency = sdkDependency();
   const validBase = {
     schema_version: 1,
     result: "pass",
@@ -152,7 +154,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       refresh_callbacks: 0,
       credential_store: credentialAudit(),
     },
-    sdk_dependency: sdkDependency(),
+    sdk_dependency: trustedDependency,
     actual_sdk_outcomes: {
       fixture_origin: true,
       semantic_acceptance: false,
@@ -184,6 +186,24 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     { ...validBase, sdk_dependency: { ...validBase.sdk_dependency, version: "0.99.2" } },
     {
       ...validBase,
+      sdk_dependency: {
+        ...validBase.sdk_dependency,
+        root: resolve(".factory/state/cp06-sdk/node_modules/@earendil-works/pi-ai-forged"),
+      },
+    },
+    {
+      ...validBase,
+      sdk_dependency: {
+        ...validBase.sdk_dependency,
+        entry: resolve(".factory/state/cp06-sdk/node_modules/@earendil-works/pi-ai/dist/forged.js"),
+      },
+    },
+    {
+      ...validBase,
+      sdk_dependency: { ...validBase.sdk_dependency, manifest_sha256: "4".repeat(64) },
+    },
+    {
+      ...validBase,
       actual_sdk_outcomes: {
         ...validBase.actual_sdk_outcomes,
         cases: [{ ...validBase.actual_sdk_outcomes.cases[0], forged: "DUMMY-SECRET" }],
@@ -200,6 +220,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
           spawnSyncImpl() {
             return { status: 0, stdout: JSON.stringify(payload), stderr: "" };
           },
+          expectedSdkDependency: trustedDependency,
         }),
       (error) => !String(error.message).includes("DUMMY-SECRET"),
     );
@@ -211,36 +232,40 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     spawnSyncImpl() {
       return { status: 0, stdout: JSON.stringify(validBase), stderr: "" };
     },
+    expectedSdkDependency: trustedDependency,
   });
   assert.equal(accepted.result, "pass");
 });
 
-test("helper compilation ignores preexisting symlinked artifact leaves", async () => {
+test("helper compilation rejects replaced artifact leaves", async () => {
   const root = process.cwd();
   const outputRoot = resolve(".factory/state/auth-security/DUMMY-compile");
   const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-compile-external-"));
   const sentinel = join(external, "DUMMY-sentinel");
   const output = openProbeOutput({ root, outputRoot, create: true });
   await writeFile(sentinel, "DUMMY sentinel unchanged");
-  await symlink(sentinel, join(output.anchor, "cp06-seccomp-exec"));
-  await symlink(sentinel, join(output.anchor, "cp06-isolation-syscalls"));
-  let binaries;
+  let replaced = false;
   try {
-    binaries = compileIsolationHelpers({
-      root,
-      outputRoot,
-      anchoredOutputRoot: output.anchor,
-      spawnSyncImpl(_command, args) {
-        const outputPath = args[args.indexOf("-o") + 1];
-        writeFileSync(outputPath, "DUMMY compiled helper");
-        return { status: 0, stdout: "", stderr: "" };
-      },
-    });
+    assert.throws(() =>
+      compileIsolationHelpers({
+        root,
+        outputRoot,
+        anchoredOutputRoot: output.anchor,
+        spawnSyncImpl(_command, _args, options) {
+          const outputPath = `/proc/${process.pid}/fd/${options.stdio[3]}`;
+          writeFileSync(outputPath, "DUMMY compiled helper");
+          if (!replaced) {
+            replaced = true;
+            const leaf = readlinkSync(outputPath);
+            rmSync(leaf, { force: true });
+            symlinkSync(sentinel, leaf);
+          }
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      }),
+    );
     assert.equal(await readFile(sentinel, "utf8"), "DUMMY sentinel unchanged");
-    assert.equal(readFileSync(binaries.helper, "utf8"), "DUMMY compiled helper");
-    assert.equal(readFileSync(binaries.syscallProbe, "utf8"), "DUMMY compiled helper");
   } finally {
-    binaries?.close?.();
     output.close();
     await rm(outputRoot, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });
@@ -287,14 +312,15 @@ function credentialAudit() {
 }
 
 function sdkDependency() {
+  const root = resolve(".factory/state/cp06-sdk/node_modules/@earendil-works/pi-ai");
   return {
-    entry: "/DUMMY/pi-ai/dist/index.js",
+    entry: join(root, "dist/index.js"),
     entry_sha256: "2".repeat(64),
     manifest_sha256: "3".repeat(64),
     name: "@earendil-works/pi-ai",
     package_sha256: "1".repeat(64),
     resolution: "esm-import-condition",
-    root: "/DUMMY/pi-ai",
+    root,
     tarball_integrity: "sha512-DUMMY",
     version: "0.85.1",
   };

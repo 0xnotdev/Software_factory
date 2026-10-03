@@ -5,16 +5,16 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const output = resolve(
-  root,
-  process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction",
-  "worker-cleanup",
-);
-await mkdir(output, { recursive: true });
-const scratch = await mkdtemp(join(output, "DUMMY-cleanup-"));
+const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
+const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+const proofDirectory = openAnchoredDirectory(output.anchor, "worker-cleanup", { reset: true });
+const proofRoot = proofDirectory.anchor;
+const proofRootPath = join(outputRoot, "worker-cleanup");
+const scratch = await mkdtemp(join(proofRoot, "DUMMY-cleanup-"));
 const cases = await withCleanup(
   async () => {
     const cases = [];
@@ -25,7 +25,13 @@ const cases = await withCleanup(
     ]) {
       const home = join(scratch, scenario);
       const temporary = join(home, "tmp");
-      const proofOutput = join(home, "proofs");
+      const proofOutputPath = join(proofRootPath, "proofs", scenario);
+      const proofOutputDirectory = openAnchoredDirectory(
+        proofDirectory.anchor,
+        `proofs/${scenario}`,
+        { reset: true },
+      );
+      const proofOutput = proofOutputDirectory.anchor;
       const source = join(home, "credential", "DUMMY-auth.json");
       await mkdir(temporary, { recursive: true });
       await mkdir(join(home, "credential"), { recursive: true });
@@ -66,19 +72,22 @@ const cases = await withCleanup(
           CP06_PI_AUTH_FILE: source,
           CP06_PI_PACKAGE_ROOT: process.env.CP06_PI_PACKAGE_ROOT,
           CP06_PI_BIN: process.env.CP06_PI_BIN,
-          CP06_OUTPUT: proofOutput,
+          CP06_OUTPUT: proofOutputPath,
           CP06_REVIEWER: "DUMMY cleanup regression",
         },
       });
       assert.equal(result.error, undefined);
       assert.equal(result.status, expectedExit, result.stderr);
-      const blocked = JSON.parse(await readFile(join(proofOutput, "worker/blocked.json"), "utf8"));
+      const blocked = JSON.parse(
+        await readFile(join(proofOutputPath, "worker/blocked.json"), "utf8"),
+      );
       assert.equal(blocked.result, "blocked");
       assert.equal(blocked.stage, "isolated-sdk-worker");
       assert.deepEqual(await readdir(temporary), [], `${scenario}: evaluation home leaked`);
       if (scenario !== "missing-source-setup")
         assert.equal(await readFile(source, "utf8"), sourceBytes);
-      await assert.rejects(readFile(join(proofOutput, "worker/evidence.json")), { code: "ENOENT" });
+      await assert.rejects(readFile(join(proofOutputPath, "worker/evidence.json")), { code: "ENOENT" });
+      proofOutputDirectory.close();
       cases.push({
         scenario,
         command: [process.execPath, ...args],
@@ -130,7 +139,9 @@ const manifest = {
     "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Launch, timeout, audit and compound cleanup failures are additionally injected at the executable supervisor interface in the unit suite; SDK timeout is exercised by the DUMMY auth-security proof.",
   ],
 };
-await writeFile(join(output, "evidence.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+await writeFile(join(proofRoot, "evidence.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+proofDirectory.close();
+output.close();
 console.log(
   JSON.stringify({
     result: "pass",

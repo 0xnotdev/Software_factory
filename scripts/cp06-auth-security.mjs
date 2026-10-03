@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, mkdtempSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
+import { resolvePinnedPiAi } from "./cp06-pi-dependency.mjs";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 import { openProbeOutput } from "./cp06-probe-fixture.mjs";
 
@@ -43,7 +53,12 @@ export async function runCp06SecurityPreflight(options = {}) {
       binaries,
     });
     assertHardenedProof(hardened);
-    const sdk = runDummySdkProof({ root, helper: binaries.helper, piRoot: pi.root });
+    const sdk = runDummySdkProof({
+      root,
+      helper: binaries.helper,
+      piRoot: pi.root,
+      expectedSdkDependency: pi.provenance.dependency,
+    });
     const proof = {
       schema_version: 1,
       gate: "CP-06-read-only-auth-security",
@@ -120,39 +135,22 @@ export function compileIsolationHelpers(options) {
   let helperFd;
   let syscallProbeFd;
   try {
-    checked(
-      "cc",
-      [
-        "-std=c11",
-        "-O2",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        join(root, "scripts/cp06-seccomp-exec.c"),
-        "-Wl,-l:libseccomp.so.2",
-        "-o",
-        helper,
-      ],
+    helperFd = compilePinnedArtifact({
       root,
+      artifactAnchor,
+      name: "cp06-seccomp-exec",
+      source: join(root, "scripts/cp06-seccomp-exec.c"),
+      extraArgs: ["-Wl,-l:libseccomp.so.2"],
       spawn,
-    );
-    checked(
-      "cc",
-      [
-        "-std=c11",
-        "-O2",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        join(root, "scripts/cp06-isolation-syscalls.c"),
-        "-o",
-        syscallProbe,
-      ],
+    });
+    syscallProbeFd = compilePinnedArtifact({
       root,
+      artifactAnchor,
+      name: "cp06-isolation-syscalls",
+      source: join(root, "scripts/cp06-isolation-syscalls.c"),
+      extraArgs: [],
       spawn,
-    );
-    helperFd = openSync(helper, constants.O_RDONLY | constants.O_NOFOLLOW);
-    syscallProbeFd = openSync(syscallProbe, constants.O_RDONLY | constants.O_NOFOLLOW);
+    });
     let closed = false;
     closeSync(artifactFd);
     return {
@@ -416,7 +414,13 @@ function assertHardenedProof(proof) {
   }
 }
 
-export function runDummySdkProof({ root, helper, piRoot, spawnSyncImpl = spawnSync }) {
+export function runDummySdkProof({
+  root,
+  helper,
+  piRoot,
+  spawnSyncImpl = spawnSync,
+  expectedSdkDependency,
+}) {
   const result = spawnSyncImpl(
     "unshare",
     [
@@ -462,10 +466,11 @@ export function runDummySdkProof({ root, helper, piRoot, spawnSyncImpl = spawnSy
           : "CP06_DUMMY_SDK_CHILD_EXIT";
     throw unsupported(`DUMMY SDK proof failed: ${code}`);
   }
-  return validateDummySdkProof(parseCompactJson(result.stdout, "DUMMY SDK proof"));
+  const trustedDependency = expectedSdkDependency ?? resolvePinnedPiAi(piRoot).provenance;
+  return validateDummySdkProof(parseCompactJson(result.stdout, "DUMMY SDK proof"), trustedDependency);
 }
 
-function validateDummySdkProof(proof) {
+function validateDummySdkProof(proof, trustedDependency) {
   assertExactKeys(proof, [
     "actual_sdk_outcomes",
     "auth_cases",
@@ -484,8 +489,8 @@ function validateDummySdkProof(proof) {
   assert(proof.network_calls === 0, "DUMMY SDK attempted network access");
   validateAuthCases(proof.auth_cases);
   validateSdkWorker(proof.sdk_worker);
-  validateSdkDependency(proof.sdk_dependency);
-  validateOutcomeProof(proof.actual_sdk_outcomes);
+  validateSdkDependency(proof.sdk_dependency, trustedDependency);
+  validateOutcomeProof(proof.actual_sdk_outcomes, trustedDependency);
   return proof;
 }
 
@@ -545,7 +550,7 @@ function validateSdkWorker(worker) {
   assert(worker.read_audit?.read_count === 1, "DUMMY SDK read count mismatch");
 }
 
-function validateSdkDependency(dependency) {
+function validateSdkDependency(dependency, trustedDependency) {
   assertExactKeys(dependency, [
     "entry",
     "entry_sha256",
@@ -557,24 +562,26 @@ function validateSdkDependency(dependency) {
     "tarball_integrity",
     "version",
   ]);
-  assert(dependency.name === "@earendil-works/pi-ai", "DUMMY SDK dependency name mismatch");
-  assert(dependency.version === "0.85.1", "DUMMY SDK dependency version mismatch");
-  assert(
-    dependency.resolution === "esm-import-condition",
-    "DUMMY SDK dependency resolution mismatch",
-  );
-  for (const key of ["entry", "root", "tarball_integrity"]) {
-    assert(
-      typeof dependency[key] === "string" && dependency[key].length > 0,
-      "DUMMY SDK dependency path missing",
-    );
+  assertExactKeys(trustedDependency, [
+    "entry",
+    "entry_sha256",
+    "manifest_sha256",
+    "name",
+    "package_sha256",
+    "resolution",
+    "root",
+    "tarball_integrity",
+    "version",
+  ]);
+  for (const [key, value] of Object.entries(trustedDependency)) {
+    assert(dependency[key] === value, `DUMMY SDK dependency ${key} mismatch`);
   }
   for (const key of ["entry_sha256", "manifest_sha256", "package_sha256"]) {
     assert(isSha256(dependency[key]), "DUMMY SDK dependency digest missing");
   }
 }
 
-function validateOutcomeProof(outcomes) {
+function validateOutcomeProof(outcomes, trustedDependency) {
   assertExactKeys(outcomes, ["cases", "fixture_origin", "semantic_acceptance"]);
   assert(outcomes.fixture_origin === true, "DUMMY outcome fixture origin missing");
   assert(outcomes.semantic_acceptance === false, "DUMMY outcome semantic acceptance was claimed");
@@ -630,7 +637,7 @@ function validateOutcomeProof(outcomes) {
       "DUMMY outcome exit mismatch",
     );
     assert(entry.fixture_origin === true, "DUMMY outcome fixture origin missing");
-    validateSdkDependency(entry.sdk_dependency);
+    validateSdkDependency(entry.sdk_dependency, trustedDependency);
     assert(entry.source_unchanged === true, "DUMMY outcome source changed");
     assert(
       entry.default_storage === 0 && entry.network === 0 && entry.refresh === 0,
@@ -690,12 +697,62 @@ function resolvePiPackage(root, options) {
   }
 }
 
+function compilePinnedArtifact({ root, artifactAnchor, name, source, extraArgs, spawn }) {
+  const leaf = join(artifactAnchor, name);
+  const fd = openSync(
+    leaf,
+    constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o700,
+  );
+  try {
+    fchmodSync(fd, 0o700);
+    const pinned = fstatSync(fd, { bigint: true });
+    const result = spawn(
+      "cc",
+      [
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        source,
+        ...extraArgs,
+        "-o",
+        "/proc/self/fd/3",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 60_000,
+        stdio: ["ignore", "pipe", "pipe", fd],
+      },
+    );
+    if (result.error !== undefined || result.status !== 0) {
+      throw unsupported("required command failed: cc");
+    }
+    fchmodSync(fd, 0o700);
+    const current = fstatSync(fd, { bigint: true });
+    const named = lstatSync(leaf, { bigint: true });
+    if (!current.isFile() || !sameInode(pinned, current) || !sameInode(pinned, named)) {
+      throw unsupported("compiled helper identity changed");
+    }
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
 function checked(command, args, cwd, spawn = spawnSync) {
   const result = spawn(command, args, { cwd, encoding: "utf8", timeout: 60_000 });
   if (result.error !== undefined || result.status !== 0) {
     throw unsupported(`required command failed: ${command}`);
   }
   return result;
+}
+
+function sameInode(a, b) {
+  return a.dev === b.dev && a.ino === b.ino;
 }
 
 function commandText(spawn, command, args, cwd) {
