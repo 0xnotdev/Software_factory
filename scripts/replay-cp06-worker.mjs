@@ -16,9 +16,6 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
-const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
-const workerDirectory = openAnchoredDirectory(output.anchor, "worker", { reset: true });
-const workerRoot = workerDirectory.anchor;
 const securityRoot = join(outputRoot, "auth-security");
 const fixtureRoot = join(outputRoot, "ten-pack", "repo");
 const initialPackPath = join(outputRoot, "ten-pack", "raw", "auth-worker-missing.pack.md");
@@ -40,6 +37,18 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 }
 
 async function main() {
+  const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+  let workerDirectory;
+  try {
+    workerDirectory = openAnchoredDirectory(output.anchor, "worker", { reset: true });
+    await runWorker(workerDirectory.anchor);
+  } finally {
+    workerDirectory?.close();
+    output.close();
+  }
+}
+
+async function runWorker(workerRoot) {
   let security;
   try {
     // This DUMMY-only gate includes the unsafe control, hardened evaluated-child
@@ -52,7 +61,7 @@ async function main() {
       retainBinaries: true,
     });
   } catch (error) {
-    await recordBlocked(error, "dummy-security-preflight");
+    await recordBlocked(workerRoot, error, "dummy-security-preflight");
     throw error;
   }
 
@@ -92,7 +101,7 @@ async function main() {
       () => rm(evaluationHome, { recursive: true, force: true }),
     );
   } catch (error) {
-    await recordBlocked(error, "isolated-sdk-worker");
+    await recordBlocked(workerRoot, error, "isolated-sdk-worker");
     throw error;
   } finally {
     binaries?.close?.();
@@ -106,7 +115,7 @@ async function main() {
     isolated.child?.result !== "pass"
   ) {
     const error = new Error("isolated SDK worker omitted a required safety assertion");
-    await recordBlocked(error, "isolated-sdk-worker-audit");
+    await recordBlocked(workerRoot, error, "isolated-sdk-worker-audit");
     throw error;
   }
 
@@ -181,7 +190,7 @@ async function main() {
   );
 }
 
-async function recordBlocked(error, stage) {
+async function recordBlocked(workerRoot, error, stage) {
   const status = createWorkerBlockedStatus(error, stage);
   await writeFile(join(workerRoot, "blocked.json"), `${JSON.stringify(status, null, 2)}\n`);
 }

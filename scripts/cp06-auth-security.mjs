@@ -704,6 +704,7 @@ function compilePinnedArtifact({ root, artifactAnchor, name, source, extraArgs, 
     constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW,
     0o700,
   );
+  let executionFd;
   try {
     fchmodSync(fd, 0o700);
     const pinned = fstatSync(fd, { bigint: true });
@@ -736,10 +737,23 @@ function compilePinnedArtifact({ root, artifactAnchor, name, source, extraArgs, 
     if (!current.isFile() || !sameInode(pinned, current) || !sameInode(pinned, named)) {
       throw unsupported("compiled helper identity changed");
     }
-    return fd;
+    executionFd = openSync(`/proc/${process.pid}/fd/${fd}`, constants.O_RDONLY);
+    const executable = fstatSync(executionFd, { bigint: true });
+    const executionLeaf = lstatSync(leaf, { bigint: true });
+    if (
+      !executable.isFile() ||
+      !executionLeaf.isFile() ||
+      !sameInode(pinned, executable) ||
+      !sameInode(pinned, executionLeaf)
+    ) {
+      throw unsupported("compiled helper identity changed");
+    }
+    return executionFd;
   } catch (error) {
-    closeSync(fd);
+    if (executionFd !== undefined) closeSync(executionFd);
     throw error;
+  } finally {
+    closeSync(fd);
   }
 }
 

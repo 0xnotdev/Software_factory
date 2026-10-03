@@ -98,12 +98,14 @@ export function openAnchoredDirectory(
   ) {
     throw new Error("DUMMY proof output child path is invalid");
   }
-  if (reset) rmSync(join(parentAnchor, components[0]), { recursive: true, force: true });
   let currentFd;
   let currentAnchor = parentAnchor;
   try {
-    for (const component of components) {
+    for (const [index, component] of components.entries()) {
       const path = join(currentAnchor, component);
+      if (reset && index === components.length - 1) {
+        rmSync(path, { recursive: true, force: true });
+      }
       if (create) {
         try {
           mkdirSync(path, { mode: 0o700 });
