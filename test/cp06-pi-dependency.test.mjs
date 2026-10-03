@@ -13,12 +13,7 @@ const resolverUrl = pathToFileURL(resolve("scripts/cp06-pi-dependency.mjs")).hre
 test("Pi selection requires the explicit task-local package and executable paths", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-pi-install-"));
   const installRoot = join(projectRoot, ".factory/state/cp06-sdk");
-  const packageRoot = join(
-    installRoot,
-    "node_modules",
-    "@earendil-works",
-    "pi-coding-agent",
-  );
+  const packageRoot = join(installRoot, "node_modules", "@earendil-works", "pi-coding-agent");
   const entry = join(packageRoot, "dist/cli.js");
   const bin = join(installRoot, "node_modules/.bin/pi");
   try {
@@ -37,15 +32,19 @@ test("Pi selection requires the explicit task-local package and executable paths
     await chmod(entry, 0o755);
     await symlink("../@earendil-works/pi-coding-agent/dist/cli.js", bin);
     const invocations = [];
-    assert.throws(() => resolvePinnedPiInstall({
-      projectRoot,
-      packageRoot,
-      executable: bin,
-      spawnSyncImpl(command, args) {
-        invocations.push([command, ...args]);
-        return { status: 0, stdout: "0.85.1\n", stderr: "" };
-      },
-    }), /pinned artifact/);
+    assert.throws(
+      () =>
+        resolvePinnedPiInstall({
+          projectRoot,
+          packageRoot,
+          executable: bin,
+          spawnSyncImpl(command, args) {
+            invocations.push([command, ...args]);
+            return { status: 0, stdout: "0.85.1\n", stderr: "" };
+          },
+        }),
+      /pinned artifact/,
+    );
     assert.deepEqual(invocations, []);
 
     for (const substitution of [
@@ -78,11 +77,19 @@ test("exact artifact succeeds and same-version selected entry substitutions fail
       await cp(join(installed, name), join(packages, name), { recursive: true });
     }
     const binPath = JSON.parse(await readFile(join(packageRoot, "package.json"))).bin;
-    await symlink(join(packageRoot, typeof binPath === "string" ? binPath : binPath.pi), executable);
+    await symlink(
+      join(packageRoot, typeof binPath === "string" ? binPath : binPath.pi),
+      executable,
+    );
     let launches = 0;
     const options = {
-      projectRoot, packageRoot, executable,
-      spawnSyncImpl() { launches++; return { status: 0, stdout: "0.85.1\n" }; },
+      projectRoot,
+      packageRoot,
+      executable,
+      spawnSyncImpl() {
+        launches++;
+        return { status: 0, stdout: "0.85.1\n" };
+      },
     };
     const positive = resolvePinnedPiInstall(options);
     assert.equal(positive.provenance.dependency.version, "0.85.1");
@@ -154,7 +161,10 @@ for (const scenario of [
         assert.match(output.provenance.package_sha256, /^[a-f0-9]{64}$/);
         assert.match(output.provenance.entry_sha256, /^[a-f0-9]{64}$/);
       } else {
-        assert.match(result.stderr, scenario.version === "0.85.1" ? /pinned artifact/ : /not exact version 0\.85\.1/);
+        assert.match(
+          result.stderr,
+          scenario.version === "0.85.1" ? /pinned artifact/ : /not exact version 0\.85\.1/,
+        );
       }
     } finally {
       await rm(directory, { recursive: true, force: true });

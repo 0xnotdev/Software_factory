@@ -3,10 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import {
-  canonicalWorkerPaths,
-  createGuardedReadTool,
-} from "../scripts/cp06-guarded-read.mjs";
+import { canonicalWorkerPaths, createGuardedReadTool } from "../scripts/cp06-guarded-read.mjs";
 
 test("guarded read denies noncanonical and unauthorized paths before tool access", async () => {
   const root = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-read-"));
