@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 
 /** Exercise the actual SDK worker executable, with only a local faux provider. */
-export async function proveDummyWorkerOutcome({ piRoot }) {
+export async function proveDummyWorkerOutcome({ piRoot, directory: requested }) {
   const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-outcome-"));
+  let directory;
+  if (requested === undefined) {
+    directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-outcome-"));
+  } else {
+    await mkdir(requested, { mode: 0o700 });
+    directory = requested;
+  }
   return withCleanup(
     async () => {
       await mkdir(join(directory, "docs"));

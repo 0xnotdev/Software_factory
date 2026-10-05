@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdirSync, realpathSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
@@ -10,8 +10,8 @@ import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { proveDummyWorkerOutcome } from "./cp06-dummy-outcome-proof.mjs";
 import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
 
-const [piRootArg] = process.argv.slice(2);
-if (!piRootArg) process.exit(64);
+const [piRootArg, proofRootArg] = process.argv.slice(2);
+if (!piRootArg || !proofRootArg) process.exit(64);
 const piRoot = resolve(piRootArg);
 const sdk = await import(pathToFileURL(join(piRoot, "dist/index.js")));
 const { module: ai, provenance: piAi } = await importPinnedPiAi(piRoot);
@@ -21,7 +21,8 @@ globalThis.fetch = async () => {
   networkCalls += 1;
   throw new Error("DUMMY proof forbids network");
 };
-const proofRoot = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-sdk-"));
+const proofRoot = realpathSync(resolve(proofRootArg));
+if (proofRoot !== resolve(proofRootArg) || readdirSync(proofRoot).length !== 0) process.exit(64);
 try {
   const authCases = [];
   for (const scenario of [
@@ -32,7 +33,10 @@ try {
     authCases.push(await authCase(scenario));
   }
   const worker = await fauxWorkerProof();
-  const outcomeProof = await proveDummyWorkerOutcome({ piRoot });
+  const outcomeProof = await proveDummyWorkerOutcome({
+    piRoot,
+    directory: join(proofRoot, "DUMMY-outcome"),
+  });
   assert.equal(networkCalls, 0);
   console.log(
     JSON.stringify({
@@ -49,7 +53,9 @@ try {
   );
 } finally {
   globalThis.fetch = originalFetch;
-  await rm(proofRoot, { recursive: true, force: true });
+  for (const entry of readdirSync(proofRoot)) {
+    await rm(join(proofRoot, entry), { recursive: true, force: true });
+  }
 }
 
 async function authCase(scenario) {

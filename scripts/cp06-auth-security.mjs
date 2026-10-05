@@ -9,7 +9,10 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  realpathSync,
+  rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolvePinnedPiAi } from "./cp06-pi-dependency.mjs";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
@@ -421,6 +424,29 @@ export function runDummySdkProof({
   spawnSyncImpl = spawnSync,
   expectedSdkDependency,
 }) {
+  const proofRoot = realpathSync(mkdtempSync(join(tmpdir(), "factory-cp06-DUMMY-sdk-")));
+  try {
+    return runDummySdkProofIn({
+      root,
+      helper,
+      piRoot,
+      spawnSyncImpl,
+      expectedSdkDependency,
+      proofRoot,
+    });
+  } finally {
+    rmSync(proofRoot, { recursive: true, force: true });
+  }
+}
+
+function runDummySdkProofIn({
+  root,
+  helper,
+  piRoot,
+  spawnSyncImpl,
+  expectedSdkDependency,
+  proofRoot,
+}) {
   const result = spawnSyncImpl(
     "unshare",
     [
@@ -442,6 +468,7 @@ export function runDummySdkProof({
       "--experimental-import-meta-resolve",
       join(root, "scripts/cp06-dummy-sdk-proof.mjs"),
       piRoot,
+      proofRoot,
     ],
     {
       cwd: root,
@@ -470,10 +497,22 @@ export function runDummySdkProof({
   return validateDummySdkProof(
     parseCompactJson(result.stdout, "DUMMY SDK proof"),
     trustedDependency,
+    dummySdkOriginalPaths(proofRoot),
   );
 }
 
-export function validateDummySdkProof(proof, trustedDependency) {
+export function dummySdkOriginalPaths(proofRoot) {
+  return {
+    sdkWorker: join(proofRoot, "DUMMY-worker", "DUMMY-original.md"),
+    outcome: join(proofRoot, "DUMMY-outcome", "docs", "AUTH.md"),
+  };
+}
+
+export function validateDummySdkProof(proof, trustedDependency, originalPaths) {
+  assert(
+    typeof originalPaths?.sdkWorker === "string" && typeof originalPaths?.outcome === "string",
+    "DUMMY SDK expected original paths missing",
+  );
   assertExactKeys(proof, [
     "actual_sdk_outcomes",
     "auth_cases",
@@ -491,9 +530,9 @@ export function validateDummySdkProof(proof, trustedDependency) {
   assert(proof.semantic_acceptance === false, "DUMMY SDK semantic acceptance was claimed");
   assert(proof.network_calls === 0, "DUMMY SDK attempted network access");
   validateAuthCases(proof.auth_cases);
-  validateSdkWorker(proof.sdk_worker);
+  validateSdkWorker(proof.sdk_worker, originalPaths.sdkWorker);
   validateSdkDependency(proof.sdk_dependency, trustedDependency);
-  validateOutcomeProof(proof.actual_sdk_outcomes, trustedDependency);
+  validateOutcomeProof(proof.actual_sdk_outcomes, trustedDependency, originalPaths.outcome);
   return proof;
 }
 
@@ -532,7 +571,7 @@ function validateAuthCases(cases) {
   }
 }
 
-function validateSdkWorker(worker) {
+function validateSdkWorker(worker, originalPath) {
   assertExactKeys(worker, [
     "active_tools",
     "credential_store",
@@ -556,7 +595,7 @@ function validateSdkWorker(worker) {
   validateCredentialAudit(worker.credential_store, { modify_denials: 0, delete_denials: 0 });
   validateReadAudit(worker.read_audit, {
     toolCallId: "DUMMY-read",
-    originalSuffix: "/DUMMY-original.md",
+    originalPath,
   });
 }
 
@@ -591,7 +630,7 @@ function validateSdkDependency(dependency, trustedDependency) {
   }
 }
 
-function validateOutcomeProof(outcomes, trustedDependency) {
+function validateOutcomeProof(outcomes, trustedDependency, originalPath) {
   assertExactKeys(outcomes, ["cases", "fixture_origin", "semantic_acceptance"]);
   assert(outcomes.fixture_origin === true, "DUMMY outcome fixture origin missing");
   assert(outcomes.semantic_acceptance === false, "DUMMY outcome semantic acceptance was claimed");
@@ -664,7 +703,7 @@ function validateOutcomeProof(outcomes, trustedDependency) {
     if (["valid", "fenced-valid"].includes(entry.scenario)) {
       validateReadAudit(entry.read_audit, {
         toolCallId: "DUMMY-actual-worker-read",
-        originalSuffix: "/docs/AUTH.md",
+        originalPath,
       });
     }
   }
@@ -682,7 +721,7 @@ function validateCredentialAudit(audit, expected) {
   assert(audit.reads >= 1, "DUMMY credential audit omitted the credential read");
 }
 
-function validateReadAudit(audit, { toolCallId, originalSuffix }) {
+function validateReadAudit(audit, { toolCallId, originalPath }) {
   assertExactKeys(audit, [
     "completed_successfully",
     "end_event_index",
@@ -707,9 +746,7 @@ function validateReadAudit(audit, { toolCallId, originalSuffix }) {
       audit.project_read_count === 1 &&
       Array.isArray(audit.project_read_paths) &&
       audit.project_read_paths.length === 1 &&
-      typeof audit.project_read_paths[0] === "string" &&
-      audit.project_read_paths[0].startsWith("/") &&
-      audit.project_read_paths[0].endsWith(originalSuffix) &&
+      audit.project_read_paths[0] === originalPath &&
       isEmptyArray(audit.rejected_read_paths) &&
       isEmptyArray(audit.other_tool_calls) &&
       isEmptyArray(audit.other_tool_completions),

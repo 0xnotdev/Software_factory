@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,7 +18,7 @@ const output = openProbeOutput({ root, outputRoot, create: true, runner: true })
 const proofDirectory = openAnchoredDirectory(output.anchor, "worker-cleanup", { reset: true });
 const proofRoot = proofDirectory.anchor;
 const proofRootPath = join(outputRoot, "worker-cleanup");
-const scratch = await mkdtemp(join(proofRoot, "DUMMY-cleanup-"));
+const scratchDirectory = openAnchoredDirectory(proofRoot, "DUMMY-cleanup", { reset: true });
 const cases = await withCleanup(
   async () => {
     const cases = [];
@@ -27,8 +27,11 @@ const cases = await withCleanup(
       ["near-expiry", 75],
       ["missing-source-setup", 70],
     ]) {
-      const home = join(scratch, scenario);
-      const temporary = join(home, "tmp");
+      const homeDirectory = openAnchoredDirectory(scratchDirectory.anchor, scenario);
+      const temporaryDirectory = openAnchoredDirectory(homeDirectory.anchor, "tmp");
+      const credentialDirectory = openAnchoredDirectory(homeDirectory.anchor, "credential");
+      const home = join(scratchDirectory.anchor, scenario);
+      const temporary = join(homeDirectory.anchor, "tmp");
       const proofOutputPath = join(proofRootPath, "proofs", scenario);
       const proofOutputDirectory = openAnchoredDirectory(
         proofDirectory.anchor,
@@ -36,9 +39,7 @@ const cases = await withCleanup(
         { reset: true },
       );
       const proofOutput = proofOutputDirectory.anchor;
-      const source = join(home, "credential", "DUMMY-auth.json");
-      await mkdir(temporary, { recursive: true });
-      await mkdir(join(home, "credential"), { recursive: true });
+      const source = join(homeDirectory.anchor, "credential", "DUMMY-auth.json");
       const sourceBytes = JSON.stringify({
         "openai-codex": {
           type: "oauth",
@@ -47,7 +48,9 @@ const cases = await withCleanup(
           expires: scenario === "expired" ? 0 : Date.now() + 60_000,
         },
       });
-      if (scenario !== "missing-source-setup") await writeFile(source, sourceBytes);
+      if (scenario !== "missing-source-setup") {
+        writeAnchoredFile(credentialDirectory.anchor, "DUMMY-auth.json", sourceBytes);
+      }
       const rawDirectory = openAnchoredDirectory(proofOutput, "ten-pack/raw");
       const docsDirectory = openAnchoredDirectory(proofOutput, "ten-pack/repo/docs");
       try {
@@ -101,6 +104,9 @@ const cases = await withCleanup(
         code: "ENOENT",
       });
       proofOutputDirectory.close();
+      credentialDirectory.close();
+      temporaryDirectory.close();
+      homeDirectory.close();
       cases.push({
         scenario,
         command: [process.execPath, ...args],
@@ -116,7 +122,13 @@ const cases = await withCleanup(
     }
     return cases;
   },
-  () => rm(scratch, { recursive: true, force: true }),
+  async () => {
+    try {
+      await rm(join(proofRoot, "DUMMY-cleanup"), { recursive: true, force: true });
+    } finally {
+      scratchDirectory.close();
+    }
+  },
 );
 const git = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
 assert.equal(git.status, 0);
@@ -149,7 +161,7 @@ const manifest = {
     ),
   ),
   limitations: [
-    "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Launch, timeout, audit and compound cleanup failures are additionally injected at the executable supervisor interface in the unit suite; SDK timeout is exercised by the DUMMY auth-security proof.",
+    "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Launch, timeout, audit and compound cleanup failures are additionally injected through stubbed mount and spawn dependencies at the in-process supervisor interface in the unit suite, not through an executable CLI boundary; SDK timeout is exercised by the DUMMY auth-security proof.",
   ],
 };
 writeAnchoredFile(proofRoot, "evidence.json", `${JSON.stringify(manifest, null, 2)}\n`);

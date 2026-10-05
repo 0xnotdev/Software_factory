@@ -154,7 +154,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       in_memory_session: true,
       event_count: 2,
       event_sha256: "0".repeat(64),
-      read_audit: readAudit("DUMMY-read", "/tmp/DUMMY-worker/DUMMY-original.md"),
+      read_audit: readAudit("DUMMY-read", "@ROOT@/DUMMY-worker/DUMMY-original.md"),
       refresh_callbacks: 0,
       credential_store: { reads: 203, lists: 1, modify_denials: 0, delete_denials: 0 },
     },
@@ -232,6 +232,13 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       ...validBase,
       sdk_worker: {
         ...validBase.sdk_worker,
+        read_audit: readAudit("DUMMY-read", "/etc/DUMMY-worker/DUMMY-original.md"),
+      },
+    },
+    {
+      ...validBase,
+      sdk_worker: {
+        ...validBase.sdk_worker,
         read_audit: { ...validBase.sdk_worker.read_audit, other_tool_calls: ["DUMMY-SECRET"] },
       },
     },
@@ -267,16 +274,25 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
         "valid",
         {
           read_audit: {
-            ...readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md"),
+            ...readAudit("DUMMY-actual-worker-read", "@ROOT@/DUMMY-outcome/docs/AUTH.md"),
             extra: "DUMMY-SECRET",
           },
+        },
+      ],
+      [
+        "valid",
+        {
+          read_audit: readAudit(
+            "DUMMY-actual-worker-read",
+            "/home/DUMMY/.pi/agent/DUMMY-outcome/docs/AUTH.md",
+          ),
         },
       ],
       [
         "fenced-valid",
         {
           read_audit: {
-            ...readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md"),
+            ...readAudit("DUMMY-actual-worker-read", "@ROOT@/DUMMY-outcome/docs/AUTH.md"),
             returned_sha256: "9".repeat(64),
           },
         },
@@ -297,9 +313,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
           root: process.cwd(),
           helper: "/DUMMY-helper",
           piRoot: "/DUMMY-pi",
-          spawnSyncImpl() {
-            return { status: 0, stdout: JSON.stringify(payload), stderr: "" };
-          },
+          spawnSyncImpl: stubbedSdkProof(payload),
           expectedSdkDependency: trustedDependency,
         }),
       (error) => !String(error.message).includes("DUMMY-SECRET"),
@@ -309,9 +323,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     root: process.cwd(),
     helper: "/DUMMY-helper",
     piRoot: "/DUMMY-pi",
-    spawnSyncImpl() {
-      return { status: 0, stdout: JSON.stringify(validBase), stderr: "" };
-    },
+    spawnSyncImpl: stubbedSdkProof(validBase),
     expectedSdkDependency: trustedDependency,
   });
   assert.equal(accepted.result, "pass");
@@ -374,6 +386,14 @@ test("anchored runner child directories do not follow substituted paths", async 
     await rm(external, { recursive: true, force: true });
   }
 });
+
+function stubbedSdkProof(payload) {
+  return (_command, args) => ({
+    status: 0,
+    stdout: JSON.stringify(payload).replaceAll("@ROOT@", args.at(-1)),
+    stderr: "",
+  });
+}
 
 function authCase(scenario, result, toAuth, modifyDenials) {
   return {
@@ -439,7 +459,7 @@ function outcome(scenario, exitCode, extra = {}) {
     ...extra,
   };
   if (["valid", "fenced-valid"].includes(scenario)) {
-    result.read_audit = readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md");
+    result.read_audit = readAudit("DUMMY-actual-worker-read", "@ROOT@/DUMMY-outcome/docs/AUTH.md");
   }
   return result;
 }
