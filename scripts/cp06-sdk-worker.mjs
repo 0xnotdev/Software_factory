@@ -6,7 +6,11 @@ import { pathToFileURL } from "node:url";
 import { Cp06AuthBlockedError, Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
 import { canonicalWorkerPaths, createGuardedReadTool } from "./cp06-guarded-read.mjs";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
-import { auditReadEvents } from "./cp06-worker-audit.mjs";
+import {
+  assistantResponseText,
+  auditReadEvents,
+  sanitizedAuditReason,
+} from "./cp06-worker-audit.mjs";
 import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 
 const [credentialTargetArg, inputPathArg] = process.argv.slice(2);
@@ -110,7 +114,7 @@ try {
     decisiveText: ["request-supplied owner fields are ignored"],
   });
   if (!readAudit.ok) {
-    throw blocked(`SDK event audit failed: ${readAudit.reason}`);
+    throw blocked(`SDK event audit failed: ${sanitizedAuditReason(readAudit.reason)}`);
   }
   const outcome = auditWorkerOutcome(response, {
     root: paths.root,
@@ -217,19 +221,9 @@ function buildPrompt({ contract, pack, originalPath }) {
 }
 
 function finalAssistantText(events) {
-  const messages = events
-    .filter((event) => event.type === "message_end" && event.message?.role === "assistant")
-    .map((event) => event.message);
-  const assistant = messages.at(-1);
-  if (assistant === undefined)
-    throw blocked("SDK event stream omitted the final assistant message");
-  if (typeof assistant.content === "string") return assistant.content;
-  return Array.isArray(assistant.content)
-    ? assistant.content
-        .filter((block) => block?.type === "text" && typeof block.text === "string")
-        .map((block) => block.text)
-        .join("")
-    : "";
+  const envelope = assistantResponseText(events);
+  if (!envelope.ok) throw blocked(`SDK assistant envelope rejected: ${envelope.reason}`);
+  return envelope.text;
 }
 
 function parseResponse(output) {

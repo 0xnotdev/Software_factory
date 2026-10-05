@@ -473,7 +473,7 @@ export function runDummySdkProof({
   );
 }
 
-function validateDummySdkProof(proof, trustedDependency) {
+export function validateDummySdkProof(proof, trustedDependency) {
   assertExactKeys(proof, [
     "actual_sdk_outcomes",
     "auth_cases",
@@ -500,9 +500,9 @@ function validateDummySdkProof(proof, trustedDependency) {
 function validateAuthCases(cases) {
   assert(Array.isArray(cases) && cases.length === 3, "DUMMY SDK auth cases incomplete");
   const expected = new Map([
-    ["expired", { result: "blocked", toAuth: 0 }],
-    ["near_expiry", { result: "blocked", toAuth: 0 }],
-    ["unexpired", { result: "resolved", toAuth: 1 }],
+    ["expired", { result: "blocked", toAuth: 0, modifyDenials: 1 }],
+    ["near_expiry", { result: "blocked", toAuth: 0, modifyDenials: 1 }],
+    ["unexpired", { result: "resolved", toAuth: 1, modifyDenials: 0 }],
   ]);
   const seen = new Set();
   for (const entry of cases) {
@@ -523,7 +523,12 @@ function validateAuthCases(cases) {
     assert(entry.to_auth_calls === expectation.toAuth, "DUMMY SDK toAuth count mismatch");
     assert(entry.persistence_operations === 0, "DUMMY SDK persistence occurred");
     assert(entry.source_unchanged === true, "DUMMY SDK auth source changed");
-    validateCredentialAudit(entry.credential_store);
+    validateCredentialAudit(entry.credential_store, {
+      reads: 1,
+      lists: 0,
+      modify_denials: expectation.modifyDenials,
+      delete_denials: 0,
+    });
   }
 }
 
@@ -548,9 +553,11 @@ function validateSdkWorker(worker) {
   );
   assert(isSha256(worker.event_sha256), "DUMMY SDK event digest missing");
   assert(worker.refresh_callbacks === 0, "DUMMY SDK worker refresh callback ran");
-  validateCredentialAudit(worker.credential_store);
-  assert(worker.read_audit?.exact_original === true, "DUMMY SDK exact original read missing");
-  assert(worker.read_audit?.read_count === 1, "DUMMY SDK read count mismatch");
+  validateCredentialAudit(worker.credential_store, { modify_denials: 0, delete_denials: 0 });
+  validateReadAudit(worker.read_audit, {
+    toolCallId: "DUMMY-read",
+    originalSuffix: "/DUMMY-original.md",
+  });
 }
 
 function validateSdkDependency(dependency, trustedDependency) {
@@ -590,20 +597,23 @@ function validateOutcomeProof(outcomes, trustedDependency) {
   assert(outcomes.semantic_acceptance === false, "DUMMY outcome semantic acceptance was claimed");
   assert(Array.isArray(outcomes.cases), "DUMMY outcome cases missing");
   const expected = new Map([
-    ["valid", 0],
-    ["fenced-valid", 0],
-    ["extra-before-fence", 75],
-    ["empty-gap", 75],
-    ["missing-gap", 75],
-    ["contradictory-gap", 75],
-    ["extra-evidence", 75],
-    ["constraint-pass", 75],
-    ["missing-reads", 75],
-    ["credential-read", 75],
-    ["symlink-read", 75],
-    ["expired", 75],
-    ["near-expiry", 75],
-    ["timeout", 70],
+    ["valid", [0, 1, 3]],
+    ["fenced-valid", [0, 1, 3]],
+    ["extra-before-fence", [75, 1, 3]],
+    ["empty-gap", [75, 1, 3]],
+    ["missing-gap", [75, 1, 3]],
+    ["contradictory-gap", [75, 1, 3]],
+    ["extra-evidence", [75, 1, 3]],
+    ["constraint-pass", [75, 1, 3]],
+    ["missing-reads", [75, 1, 3]],
+    ["credential-read", [75, 1, 3]],
+    ["symlink-read", [75, 1, 3]],
+    ["earlier-assistant-claim", [75, 1, 3]],
+    ["final-extra-channel", [75, 1, 4]],
+    ["unexpected-tool-secret", [75, 1, 3]],
+    ["expired", [75, 0, 0]],
+    ["near-expiry", [75, 0, 0]],
+    ["timeout", [70, 1, 2]],
   ]);
   const seen = new Set();
   for (const entry of outcomes.cases) {
@@ -611,7 +621,8 @@ function validateOutcomeProof(outcomes, trustedDependency) {
       entry !== null && typeof entry === "object" && !Array.isArray(entry),
       "DUMMY outcome case malformed",
     );
-    const expectedExit = expected.get(entry.scenario);
+    const [expectedExit, expectedRuntimeCreate, expectedToAuth] =
+      expected.get(entry.scenario) ?? [];
     assert(
       expectedExit !== undefined && !seen.has(entry.scenario),
       "DUMMY outcome scenario mismatch",
@@ -646,29 +657,84 @@ function validateOutcomeProof(outcomes, trustedDependency) {
       entry.default_storage === 0 && entry.network === 0 && entry.refresh === 0,
       "DUMMY outcome side effect occurred",
     );
-    if (["expired", "near-expiry"].includes(entry.scenario)) {
-      assert(
-        entry.runtime_create === 0 && entry.to_auth === 0,
-        "DUMMY expired auth reached runtime creation",
-      );
-    }
+    assert(
+      entry.runtime_create === expectedRuntimeCreate && entry.to_auth === expectedToAuth,
+      "DUMMY outcome runtime/auth count mismatch",
+    );
     if (["valid", "fenced-valid"].includes(entry.scenario)) {
-      assert(
-        entry.runtime_create === 1 && entry.to_auth === 1,
-        "DUMMY valid auth did not run exactly once",
-      );
-      assert(entry.read_audit?.exact_original === true, "DUMMY outcome exact read missing");
-      assert(entry.read_audit?.read_count === 1, "DUMMY outcome read count mismatch");
+      validateReadAudit(entry.read_audit, {
+        toolCallId: "DUMMY-actual-worker-read",
+        originalSuffix: "/docs/AUTH.md",
+      });
     }
   }
   assert(seen.size === expected.size, "DUMMY outcome cases incomplete");
 }
 
-function validateCredentialAudit(audit) {
+function validateCredentialAudit(audit, expected) {
   assertExactKeys(audit, ["delete_denials", "lists", "modify_denials", "reads"]);
   for (const key of ["delete_denials", "lists", "modify_denials", "reads"]) {
     assert(Number.isSafeInteger(audit[key]) && audit[key] >= 0, "DUMMY credential audit malformed");
+    if (Object.hasOwn(expected, key)) {
+      assert(audit[key] === expected[key], `DUMMY credential audit ${key} mismatch`);
+    }
   }
+  assert(audit.reads >= 1, "DUMMY credential audit omitted the credential read");
+}
+
+function validateReadAudit(audit, { toolCallId, originalSuffix }) {
+  assertExactKeys(audit, [
+    "completed_successfully",
+    "end_event_index",
+    "exact_original",
+    "expected_sha256",
+    "other_tool_calls",
+    "other_tool_completions",
+    "project_read_count",
+    "project_read_paths",
+    "read_count",
+    "rejected_read_paths",
+    "response_event_index",
+    "returned_bytes",
+    "returned_sha256",
+    "start_event_index",
+    "tool_call_id",
+  ]);
+  const isEmptyArray = (value) => Array.isArray(value) && value.length === 0;
+  const isIndex = (value) => Number.isSafeInteger(value) && value >= 0;
+  assert(
+    audit.read_count === 1 &&
+      audit.project_read_count === 1 &&
+      Array.isArray(audit.project_read_paths) &&
+      audit.project_read_paths.length === 1 &&
+      typeof audit.project_read_paths[0] === "string" &&
+      audit.project_read_paths[0].startsWith("/") &&
+      audit.project_read_paths[0].endsWith(originalSuffix) &&
+      isEmptyArray(audit.rejected_read_paths) &&
+      isEmptyArray(audit.other_tool_calls) &&
+      isEmptyArray(audit.other_tool_completions),
+    "DUMMY read audit did not record exactly one original read",
+  );
+  assert(
+    audit.completed_successfully === true && audit.exact_original === true,
+    "DUMMY exact original read missing",
+  );
+  assert(
+    isSha256(audit.expected_sha256) &&
+      audit.returned_sha256 === audit.expected_sha256 &&
+      Number.isSafeInteger(audit.returned_bytes) &&
+      audit.returned_bytes > 0,
+    "DUMMY read audit bytes mismatch",
+  );
+  assert(audit.tool_call_id === toolCallId, "DUMMY read audit tool call mismatch");
+  assert(
+    isIndex(audit.start_event_index) &&
+      isIndex(audit.end_event_index) &&
+      isIndex(audit.response_event_index) &&
+      audit.start_event_index < audit.end_event_index &&
+      audit.end_event_index < audit.response_event_index,
+    "DUMMY read audit event order mismatch",
+  );
 }
 
 function assertExactKeys(value, keys) {

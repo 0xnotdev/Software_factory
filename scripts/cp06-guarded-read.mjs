@@ -95,11 +95,8 @@ export function assertAllowedRead(args, expectedOriginalPath, completeLineLimit 
   }
 }
 
-function readPinnedRegularFile(path) {
-  const descriptor = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-  );
+export function readPinnedRegularFile(path) {
+  const descriptor = openWithoutFollowingAncestors(path);
   try {
     const before = fstatSync(descriptor, { bigint: true });
     const named = lstatSync(path, { bigint: true });
@@ -131,6 +128,30 @@ function readPinnedRegularFile(path) {
     return { bytes, identity: before, lineCount };
   } finally {
     closeSync(descriptor);
+  }
+}
+
+function openWithoutFollowingAncestors(path) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) {
+    throw new Error("supplied original path must be absolute and normalized");
+  }
+  const components = path.split("/").filter((component) => component.length > 0);
+  if (components.length === 0) throw new Error("supplied original path names no file");
+  const directoryFlags =
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC;
+  let parentFd = openSync("/", directoryFlags);
+  try {
+    for (const component of components.slice(0, -1)) {
+      const nextFd = openSync(`/proc/self/fd/${parentFd}/${component}`, directoryFlags);
+      closeSync(parentFd);
+      parentFd = nextFd;
+    }
+    return openSync(
+      `/proc/self/fd/${parentFd}/${components.at(-1)}`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+    );
+  } finally {
+    closeSync(parentFd);
   }
 }
 

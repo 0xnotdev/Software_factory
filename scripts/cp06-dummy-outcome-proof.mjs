@@ -42,6 +42,9 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
         ["missing-reads", 75],
         ["credential-read", 75],
         ["symlink-read", 75],
+        ["earlier-assistant-claim", 75],
+        ["final-extra-channel", 75],
+        ["unexpected-tool-secret", 75],
         ["expired", 75],
         ["near-expiry", 75],
         ["timeout", 70],
@@ -131,6 +134,12 @@ export async function proveDummyWorkerOutcome({ piRoot }) {
           assert.match(result.stderr, /SDK event audit failed/);
           assert.equal(result.stdout.includes("DUMMY-ACCESS"), false);
           assert.equal(result.stderr.includes("DUMMY-ACCESS"), false);
+        }
+        if (["earlier-assistant-claim", "final-extra-channel"].includes(scenario))
+          assert.match(result.stderr, /SDK assistant envelope rejected/);
+        if (scenario === "unexpected-tool-secret") {
+          assert.match(result.stderr, /SDK event audit failed: unexpected tool events\n$/);
+          assert.equal(`${result.stdout}${result.stderr}`.includes("DUMMY-SECRET"), false);
         }
         if (scenario === "timeout") assert.match(result.stderr, /worker timed out and was aborted/);
         if (scenario === "extra-before-fence")

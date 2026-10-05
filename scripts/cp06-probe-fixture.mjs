@@ -9,6 +9,7 @@ import {
   openSync,
   readSync,
   rmSync,
+  writeSync,
 } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
@@ -129,6 +130,44 @@ export function openAnchoredDirectory(
     };
   } finally {
     if (currentFd !== undefined) closeSync(currentFd);
+  }
+}
+
+export function writeAnchoredFile(parentAnchor, name, data) {
+  if (
+    typeof name !== "string" ||
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    name.includes("/") ||
+    name.includes("\0")
+  ) {
+    throw new Error("DUMMY proof artifact name is invalid");
+  }
+  const bytes = Buffer.from(data);
+  const path = join(parentAnchor, name);
+  const fd = openSync(
+    path,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW |
+      constants.O_CLOEXEC,
+    0o600,
+  );
+  try {
+    const created = fstatSync(fd, { bigint: true });
+    if (!created.isFile() || created.nlink !== 1n) {
+      throw new Error("DUMMY proof artifact is not one fresh regular file");
+    }
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    if (!sameInode(created, lstatSync(path, { bigint: true }))) {
+      throw new Error("DUMMY proof artifact identity changed");
+    }
+    return createHash("sha256").update(bytes).digest("hex");
+  } finally {
+    closeSync(fd);
   }
 }
 

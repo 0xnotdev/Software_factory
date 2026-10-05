@@ -2,7 +2,12 @@ import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
-import { auditReadEvents, isExpectedOriginalReference } from "../scripts/cp06-worker-audit.mjs";
+import {
+  assistantResponseText,
+  auditReadEvents,
+  isExpectedOriginalReference,
+  sanitizedAuditReason,
+} from "../scripts/cp06-worker-audit.mjs";
 
 const root = process.cwd();
 const originalPath = resolve(root, "test/fixtures/cp06-context/docs/AUTH.md");
@@ -192,3 +197,57 @@ for (const [name, acceptedStart] of [
     assert.equal(audit.summary.expected_sha256, audit.summary.returned_sha256);
   });
 }
+
+test("worker read audit reasons never carry event-controlled names or IDs", () => {
+  const secretTool = {
+    type: "tool_execution_start",
+    toolName: "DUMMY-SECRET-TOOL",
+    toolCallId: "DUMMY-SECRET-ID",
+    args: {},
+  };
+  const unmatched = successfulEnd({ toolCallId: "DUMMY-SECRET-ID" });
+  for (const events of [
+    [start, successfulEnd(), secretTool, finalMessage],
+    [{ ...start, toolCallId: "DUMMY-SECRET-ID" }, successfulEnd(), finalMessage],
+    [start, unmatched, finalMessage],
+  ]) {
+    const audit = auditReadEvents(events, options);
+    assert.equal(audit.ok, false);
+    assert.equal(audit.reason.includes("DUMMY-SECRET"), false);
+    assert.equal(sanitizedAuditReason(audit.reason), audit.reason);
+  }
+  assert.equal(
+    sanitizedAuditReason("unexpected tool DUMMY-SECRET-TOOL"),
+    "SDK event audit rejected the event stream",
+  );
+});
+
+test("assistant envelope rejects competing evidence and unsupported final channels", () => {
+  const toolCall = { type: "toolCall", id: "read-auth", name: "read", arguments: {} };
+  const toolUse = (content) => ({
+    type: "message_end",
+    message: { role: "assistant", stopReason: "toolUse", content },
+  });
+  const final = (content) => ({
+    type: "message_end",
+    message: { role: "assistant", stopReason: "stop", content },
+  });
+  const accepted = assistantResponseText([
+    toolUse([{ type: "thinking", thinking: "DUMMY plan" }, toolCall]),
+    final([{ type: "text", text: '{"status":"MISSING_SOURCE"}' }]),
+  ]);
+  assert.deepEqual(accepted, { ok: true, text: '{"status":"MISSING_SOURCE"}' });
+  for (const events of [
+    [],
+    [toolUse([{ type: "text", text: "Creation verified and passed" }, toolCall]), final("{}")],
+    [final([{ type: "text", text: "Creation passed" }]), final([{ type: "text", text: "{}" }])],
+    [toolUse([toolCall]), final([{ type: "text", text: "{}" }, toolCall])],
+    [toolUse([toolCall]), final([{ type: "image", data: "DUMMY", mimeType: "image/png" }])],
+    [
+      toolUse([toolCall]),
+      { ...final("{}"), message: { ...final("{}").message, stopReason: "length" } },
+    ],
+  ]) {
+    assert.equal(assistantResponseText(events).ok, false);
+  }
+});

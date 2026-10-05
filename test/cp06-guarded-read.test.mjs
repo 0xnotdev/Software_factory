@@ -1,9 +1,13 @@
 import { strict as assert } from "node:assert";
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalWorkerPaths, createGuardedReadTool } from "../scripts/cp06-guarded-read.mjs";
+import {
+  canonicalWorkerPaths,
+  createGuardedReadTool,
+  readPinnedRegularFile,
+} from "../scripts/cp06-guarded-read.mjs";
 
 test("guarded read denies noncanonical and unauthorized paths before tool access", async () => {
   const root = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-read-"));
@@ -98,3 +102,26 @@ test("worker paths reject symlink escapes and credential overlap", async () => {
 function credentialPath(root) {
   return join(root, "auth.json");
 }
+
+test("initial original snapshot does not follow a substituted ancestor directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-ancestor-"));
+  const original = join(root, "fixture", "docs", "AUTH.md");
+  const external = join(root, "DUMMY-external");
+  await mkdir(join(root, "fixture", "docs"), { recursive: true });
+  await mkdir(external);
+  await writeFile(original, "DUMMY exact original");
+  await writeFile(join(external, "AUTH.md"), "DUMMY-EXTERNAL-SECRET");
+  try {
+    assert.equal(readPinnedRegularFile(original).bytes.toString("utf8"), "DUMMY exact original");
+    await rename(join(root, "fixture", "docs"), join(root, "fixture", "docs-moved"));
+    await symlink(external, join(root, "fixture", "docs"));
+    assert.throws(
+      () => readPinnedRegularFile(original),
+      (error) =>
+        ["ELOOP", "ENOTDIR"].includes(error.code) &&
+        !String(error.message).includes("DUMMY-EXTERNAL"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

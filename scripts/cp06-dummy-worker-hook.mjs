@@ -97,12 +97,27 @@ sdk.ModelRuntime.create = async function (options) {
       : scenario === "fenced-valid"
         ? `\x60\x60\x60json\n${jsonResponse}\n\x60\x60\x60`
         : jsonResponse;
+  const readCall = ai.fauxToolCall(
+    scenario === "unexpected-tool-secret" ? "DUMMY-SECRET-TOOL" : "read",
+    { path: readPath },
+    { id: "DUMMY-actual-worker-read" },
+  );
   faux.setResponses([
     ai.fauxAssistantMessage(
-      ai.fauxToolCall("read", { path: readPath }, { id: "DUMMY-actual-worker-read" }),
+      scenario === "earlier-assistant-claim"
+        ? [ai.fauxText("Creation verified and passed"), readCall]
+        : readCall,
       { stopReason: "toolUse" },
     ),
-    ai.fauxAssistantMessage(responseText, { stopReason: "stop" }),
+    ai.fauxAssistantMessage(
+      scenario === "final-extra-channel"
+        ? [
+            ai.fauxText(responseText),
+            ai.fauxToolCall("read", { path: readPath }, { id: "DUMMY-final-extra" }),
+          ]
+        : responseText,
+      { stopReason: "stop" },
+    ),
   ]);
   return runtime;
 };

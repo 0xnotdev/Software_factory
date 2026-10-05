@@ -38,6 +38,8 @@ for (const scenario of [
   "cleanup",
   "primary-and-cleanup",
   "audit-and-cleanup",
+  "semantic-audit",
+  "semantic-audit-and-cleanup",
 ]) {
   test(`supervisor awaits cleanup and preserves failures: ${scenario}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-lifecycle-"));
@@ -86,7 +88,14 @@ for (const scenario of [
                 await new Promise((done) => setTimeout(done, 5));
                 cleanups++;
                 await rm(target);
-                if (["cleanup", "primary-and-cleanup", "audit-and-cleanup"].includes(scenario))
+                if (
+                  [
+                    "cleanup",
+                    "primary-and-cleanup",
+                    "audit-and-cleanup",
+                    "semantic-audit-and-cleanup",
+                  ].includes(scenario)
+                )
                   throw cleanupError;
               },
             };
@@ -106,7 +115,9 @@ for (const scenario of [
               status: 0,
               stdout: ["audit", "audit-and-cleanup"].includes(scenario)
                 ? "invalid JSON"
-                : '{"result":"pass"}',
+                : scenario.startsWith("semantic-audit")
+                  ? JSON.stringify({ ...validWorkerChild(), result: "fail" })
+                  : JSON.stringify(validWorkerChild()),
             };
           },
         },
@@ -158,7 +169,18 @@ for (const scenario of [
             assert.equal(error.code, "CP06_AUTH_BLOCKED");
           }
           if (scenario === "timeout") assert.equal(error.cause.code, "ETIMEDOUT");
-          if (["cleanup", "primary-and-cleanup", "audit-and-cleanup"].includes(scenario)) {
+          if (scenario === "semantic-audit") {
+            assert.equal(error.code, "CP06_CHILD_OUTPUT_INVALID");
+            assert.equal(error.stage, "audit");
+          }
+          if (
+            [
+              "cleanup",
+              "primary-and-cleanup",
+              "audit-and-cleanup",
+              "semantic-audit-and-cleanup",
+            ].includes(scenario)
+          ) {
             assert(error instanceof Cp06CleanupError);
             assert.equal(error.exitCode, 74);
             assert.equal(error.errors.at(-1), cleanupError);
@@ -168,7 +190,7 @@ for (const scenario of [
               assert.equal(error.errors[0].code, "CP06_AUTH_BLOCKED");
               assert.equal(error.cause, error.errors[0]);
             }
-            if (scenario === "audit-and-cleanup") {
+            if (["audit-and-cleanup", "semantic-audit-and-cleanup"].includes(scenario)) {
               assert.equal(error.errors[0].exitCode, 70);
               assert.equal(error.errors[0].code, "CP06_CHILD_OUTPUT_INVALID");
               assert.equal(error.cause, error.errors[0]);
@@ -231,7 +253,7 @@ test("both probe modes require a supervisor-generated DUMMY fixture", async () =
         spawn() {
           launches++;
           if (mode === "unsafe-probe") writeFileSync(source, "DUMMY mutated");
-          return { status: 0, stdout: '{"result":"DUMMY"}' };
+          return { status: 0, stdout: JSON.stringify(validProbeChild()) };
         },
       };
       await assert.rejects(superviseCredentialChild({ ...options, target: secret }, dependencies), {
@@ -461,7 +483,7 @@ test("worker source integrity uses metadata without reading credential bytes", a
           };
         },
         spawn() {
-          return { status: 0, stdout: '{"result":"pass"}' };
+          return { status: 0, stdout: JSON.stringify(validWorkerChild()) };
         },
       },
     );
@@ -573,6 +595,36 @@ test("audit and cleanup causes survive supervisor output and replay blocked reco
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+function validWorkerChild() {
+  return {
+    schema_version: 1,
+    result: "pass",
+    pi_version: "0.85.1",
+    pi_install: { version: "0.85.1" },
+    provider: "openai-codex",
+    model: "DUMMY-model",
+    oauth_preflight: { minimum_validity_ms: 1, remaining_validity_ms: 2, refreshed: false },
+    credential_store: { reads: 1, lists: 0, modify_denials: 0, delete_denials: 0 },
+    session: { in_memory: true, active_tools: ["read"] },
+    event_stream: {
+      sha256: "0".repeat(64),
+      event_count: 3,
+      read_audit: { exact_original: true, read_count: 1 },
+    },
+    response: { status: "MISSING_SOURCE" },
+    response_sha256: "1".repeat(64),
+    raw_transcript_retained: false,
+  };
+}
+
+function validProbeChild() {
+  return {
+    identity: { uid: 0, gid: 0, status: {} },
+    source: { unchanged: true },
+    direct_namespace_syscalls: { exit: null, skipped: true },
+  };
+}
 
 function dummyStat() {
   return {

@@ -2,12 +2,16 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
-import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  openProbeOutput,
+  writeAnchoredFile,
+} from "./cp06-probe-fixture.mjs";
 import {
   Cp06IsolationUnsupportedError,
   runCp06SecurityPreflight,
@@ -78,7 +82,7 @@ async function runWorker(workerRoot) {
     system_prompt: systemPrompt,
   };
   const inputPath = join(workerRoot, "input.json");
-  await writeFile(inputPath, `${JSON.stringify(workerInput, null, 2)}\n`);
+  writeAnchoredFile(workerRoot, "input.json", `${JSON.stringify(workerInput, null, 2)}\n`);
   const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-sdk-worker-"));
   const credentialTarget = join(evaluationHome, "pi-agent", "auth.json");
   const credentialSource = resolve(
@@ -174,14 +178,18 @@ async function runWorker(workerRoot) {
       "Live model wording is nondeterministic. The proof runner is Linux x86-64 only and exits blocked before credential access/provider use when user/mount namespaces, libseccomp, exact Pi 0.85.1, or adequate unexpired OAuth validity are unavailable.",
   };
   const manifestPath = join(workerRoot, "evidence.json");
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestSha256 = writeAnchoredFile(
+    workerRoot,
+    "evidence.json",
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
   console.log(
     JSON.stringify({
       ok: true,
       gate: manifest.gate,
       tested_sha: testedSha,
       manifest_path: relative(manifestPath),
-      manifest_sha256: await fileHash(manifestPath),
+      manifest_sha256: manifestSha256,
       exit_code: 0,
       status: manifest.response.status,
       reads: manifest.event_stream.read_audit.project_read_paths,
@@ -192,7 +200,7 @@ async function runWorker(workerRoot) {
 
 async function recordBlocked(workerRoot, error, stage) {
   const status = createWorkerBlockedStatus(error, stage);
-  await writeFile(join(workerRoot, "blocked.json"), `${JSON.stringify(status, null, 2)}\n`);
+  writeAnchoredFile(workerRoot, "blocked.json", `${JSON.stringify(status, null, 2)}\n`);
 }
 
 export function createWorkerBlockedStatus(error, stage, recordedAt = new Date().toISOString()) {

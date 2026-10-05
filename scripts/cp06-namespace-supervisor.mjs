@@ -143,6 +143,9 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           } catch {
             throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
           }
+          if (!validChildContract(mode, childEvidence)) {
+            throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
+          }
           return {
             schema_version: 1,
             mode,
@@ -157,6 +160,56 @@ export async function superviseCredentialChild(options, dependencies = {}) {
       ),
     () => probe?.cleanup(),
   );
+}
+
+const WORKER_CHILD_KEYS = [
+  "credential_store",
+  "event_stream",
+  "model",
+  "oauth_preflight",
+  "pi_install",
+  "pi_version",
+  "provider",
+  "raw_transcript_retained",
+  "response",
+  "response_sha256",
+  "result",
+  "schema_version",
+  "session",
+].join(",");
+
+function validChildContract(mode, child) {
+  if (!isPlainObject(child)) return false;
+  if (mode !== "worker") {
+    return (
+      isPlainObject(child.identity) &&
+      isPlainObject(child.identity.status) &&
+      isPlainObject(child.source) &&
+      typeof child.source.unchanged === "boolean" &&
+      isPlainObject(child.direct_namespace_syscalls)
+    );
+  }
+  return (
+    Object.keys(child).sort().join(",") === WORKER_CHILD_KEYS &&
+    child.schema_version === 1 &&
+    child.result === "pass" &&
+    child.pi_version === "0.85.1" &&
+    child.raw_transcript_retained === false &&
+    isPlainObject(child.pi_install) &&
+    isPlainObject(child.credential_store) &&
+    isPlainObject(child.response) &&
+    typeof child.response_sha256 === "string" &&
+    /^[0-9a-f]{64}$/u.test(child.response_sha256) &&
+    child.oauth_preflight?.refreshed === false &&
+    child.session?.in_memory === true &&
+    JSON.stringify(child.session?.active_tools) === '["read"]' &&
+    child.event_stream?.read_audit?.exact_original === true &&
+    child.event_stream.read_audit.read_count === 1
+  );
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function childCommand({

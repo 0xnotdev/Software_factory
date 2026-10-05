@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { writeFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cp06IsolationUnsupportedError, runCp06SecurityPreflight } from "./cp06-auth-security.mjs";
-import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openProbeOutput, writeAnchoredFile } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
@@ -16,7 +16,12 @@ try {
   const path = resolve(outputRoot, "auth-security", "evidence.json");
   const output = openProbeOutput({ root, outputRoot: resolve(outputRoot, "auth-security") });
   try {
-    await writeFile(resolve(output.anchor, "evidence.json"), `${JSON.stringify(proof, null, 2)}\n`);
+    try {
+      unlinkSync(resolve(output.anchor, "evidence.json"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    writeAnchoredFile(output.anchor, "evidence.json", `${JSON.stringify(proof, null, 2)}\n`);
   } finally {
     output.close();
   }

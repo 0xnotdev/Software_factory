@@ -5,7 +5,11 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  openProbeOutput,
+  writeAnchoredFile,
+} from "./cp06-probe-fixture.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -44,16 +48,23 @@ const cases = await withCleanup(
         },
       });
       if (scenario !== "missing-source-setup") await writeFile(source, sourceBytes);
-      await mkdir(join(proofOutput, "ten-pack/raw"), { recursive: true });
-      await mkdir(join(proofOutput, "ten-pack/repo/docs"), { recursive: true });
-      await writeFile(
-        join(proofOutput, "ten-pack/raw/auth-worker-missing.pack.md"),
-        "DUMMY cleanup-only handoff; no semantic acceptance claimed.\n",
-      );
-      await writeFile(
-        join(proofOutput, "ten-pack/repo/docs/AUTH.md"),
-        await readFile(join(root, "test/fixtures/cp06-context/docs/AUTH.md")),
-      );
+      const rawDirectory = openAnchoredDirectory(proofOutput, "ten-pack/raw");
+      const docsDirectory = openAnchoredDirectory(proofOutput, "ten-pack/repo/docs");
+      try {
+        writeAnchoredFile(
+          rawDirectory.anchor,
+          "auth-worker-missing.pack.md",
+          "DUMMY cleanup-only handoff; no semantic acceptance claimed.\n",
+        );
+        writeAnchoredFile(
+          docsDirectory.anchor,
+          "AUTH.md",
+          await readFile(join(root, "test/fixtures/cp06-context/docs/AUTH.md")),
+        );
+      } finally {
+        rawDirectory.close();
+        docsDirectory.close();
+      }
       const args = [
         "--experimental-import-meta-resolve",
         join(root, "scripts/replay-cp06-worker.mjs"),
@@ -141,7 +152,7 @@ const manifest = {
     "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Launch, timeout, audit and compound cleanup failures are additionally injected at the executable supervisor interface in the unit suite; SDK timeout is exercised by the DUMMY auth-security proof.",
   ],
 };
-await writeFile(join(proofRoot, "evidence.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+writeAnchoredFile(proofRoot, "evidence.json", `${JSON.stringify(manifest, null, 2)}\n`);
 proofDirectory.close();
 output.close();
 console.log(

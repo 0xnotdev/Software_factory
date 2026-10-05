@@ -19,7 +19,11 @@ import {
   runDummySdkProof,
   runIsolationProbe,
 } from "../scripts/cp06-auth-security.mjs";
-import { openAnchoredDirectory, openProbeOutput } from "../scripts/cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  openProbeOutput,
+  writeAnchoredFile,
+} from "../scripts/cp06-probe-fixture.mjs";
 
 const runners = [
   "scripts/replay-cp06-worker.mjs",
@@ -141,18 +145,18 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     schema_version: 1,
     result: "pass",
     auth_cases: [
-      authCase("expired", "blocked", 0),
-      authCase("near_expiry", "blocked", 0),
-      authCase("unexpired", "resolved", 1),
+      authCase("expired", "blocked", 0, 1),
+      authCase("near_expiry", "blocked", 0, 1),
+      authCase("unexpired", "resolved", 1, 0),
     ],
     sdk_worker: {
       active_tools: ["read"],
       in_memory_session: true,
       event_count: 2,
       event_sha256: "0".repeat(64),
-      read_audit: { exact_original: true, read_count: 1 },
+      read_audit: readAudit("DUMMY-read", "/tmp/DUMMY-worker/DUMMY-original.md"),
       refresh_callbacks: 0,
-      credential_store: credentialAudit(),
+      credential_store: { reads: 203, lists: 1, modify_denials: 0, delete_denials: 0 },
     },
     sdk_dependency: trustedDependency,
     actual_sdk_outcomes: {
@@ -170,9 +174,12 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
         outcome("missing-reads", 75),
         outcome("credential-read", 75),
         outcome("symlink-read", 75),
-        outcome("expired", 75, { runtime_create: 0 }),
-        outcome("near-expiry", 75, { runtime_create: 0 }),
-        outcome("timeout", 70),
+        outcome("earlier-assistant-claim", 75),
+        outcome("final-extra-channel", 75, { to_auth: 4 }),
+        outcome("unexpected-tool-secret", 75),
+        outcome("expired", 75),
+        outcome("near-expiry", 75),
+        outcome("timeout", 70, { to_auth: 2 }),
       ],
     },
     fixture_origin: true,
@@ -210,6 +217,79 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       },
     },
     { ...validBase, sdk_worker: { ...validBase.sdk_worker, active_tools: ["read", "write"] } },
+    {
+      ...validBase,
+      sdk_worker: {
+        ...validBase.sdk_worker,
+        read_audit: { ...validBase.sdk_worker.read_audit, extra: "DUMMY-SECRET" },
+      },
+    },
+    {
+      ...validBase,
+      sdk_worker: { ...validBase.sdk_worker, read_audit: { exact_original: true, read_count: 1 } },
+    },
+    {
+      ...validBase,
+      sdk_worker: {
+        ...validBase.sdk_worker,
+        read_audit: { ...validBase.sdk_worker.read_audit, other_tool_calls: ["DUMMY-SECRET"] },
+      },
+    },
+    {
+      ...validBase,
+      sdk_worker: {
+        ...validBase.sdk_worker,
+        credential_store: { ...validBase.sdk_worker.credential_store, modify_denials: 7 },
+      },
+    },
+    {
+      ...validBase,
+      auth_cases: [
+        authCase("expired", "blocked", 0, 0),
+        validBase.auth_cases[1],
+        validBase.auth_cases[2],
+      ],
+    },
+    {
+      ...validBase,
+      auth_cases: [
+        validBase.auth_cases[0],
+        authCase("near_expiry", "blocked", 0, 9),
+        validBase.auth_cases[2],
+      ],
+    },
+    ...[
+      ["valid", { to_auth: 0 }],
+      ["missing-reads", { runtime_create: 0, to_auth: 0 }],
+      ["credential-read", { to_auth: 17 }],
+      ["expired", { runtime_create: 1 }],
+      [
+        "valid",
+        {
+          read_audit: {
+            ...readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md"),
+            extra: "DUMMY-SECRET",
+          },
+        },
+      ],
+      [
+        "fenced-valid",
+        {
+          read_audit: {
+            ...readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md"),
+            returned_sha256: "9".repeat(64),
+          },
+        },
+      ],
+    ].map(([scenario, changes]) => ({
+      ...validBase,
+      actual_sdk_outcomes: {
+        ...validBase.actual_sdk_outcomes,
+        cases: validBase.actual_sdk_outcomes.cases.map((entry) =>
+          entry.scenario === scenario ? { ...entry, ...changes } : entry,
+        ),
+      },
+    })),
   ]) {
     assert.throws(
       () =>
@@ -295,20 +375,36 @@ test("anchored runner child directories do not follow substituted paths", async 
   }
 });
 
-function authCase(scenario, result, toAuth) {
+function authCase(scenario, result, toAuth, modifyDenials) {
   return {
     scenario,
     result,
     refresh_callbacks: 0,
     to_auth_calls: toAuth,
-    credential_store: credentialAudit(),
+    credential_store: { reads: 1, lists: 0, modify_denials: modifyDenials, delete_denials: 0 },
     persistence_operations: 0,
     source_unchanged: true,
   };
 }
 
-function credentialAudit() {
-  return { reads: 1, lists: 0, modify_denials: 1, delete_denials: 1 };
+function readAudit(toolCallId, originalPath) {
+  return {
+    read_count: 1,
+    project_read_count: 1,
+    project_read_paths: [originalPath],
+    rejected_read_paths: [],
+    other_tool_calls: [],
+    other_tool_completions: [],
+    completed_successfully: true,
+    exact_original: true,
+    expected_sha256: "5".repeat(64),
+    returned_sha256: "5".repeat(64),
+    returned_bytes: 117,
+    tool_call_id: toolCallId,
+    start_event_index: 12,
+    end_event_index: 13,
+    response_event_index: 46,
+  };
 }
 
 function sdkDependency() {
@@ -337,13 +433,46 @@ function outcome(scenario, exitCode, extra = {}) {
     default_storage: 0,
     network: 0,
     refresh: 0,
-    to_auth: ["expired", "near-expiry"].includes(scenario) ? 0 : 1,
+    to_auth: ["expired", "near-expiry"].includes(scenario) ? 0 : 3,
     runtime_create: ["expired", "near-expiry"].includes(scenario) ? 0 : 1,
     source_unchanged: true,
     ...extra,
   };
   if (["valid", "fenced-valid"].includes(scenario)) {
-    result.read_audit = { exact_original: true, read_count: 1 };
+    result.read_audit = readAudit("DUMMY-actual-worker-read", "/tmp/DUMMY-outcome/docs/AUTH.md");
   }
   return result;
 }
+
+test("anchored artifact writes refuse substituted leaves before external mutation", async () => {
+  const root = process.cwd();
+  const outputRoot = resolve(".factory/state/cp06-correction/DUMMY-artifact-leaf");
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-leaf-external-"));
+  const sentinel = join(external, "DUMMY-sentinel");
+  await writeFile(sentinel, "DUMMY-SENTINEL-UNCHANGED");
+  const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+  const child = openAnchoredDirectory(output.anchor, "worker", { reset: true });
+  try {
+    for (const name of ["input.json", "evidence.json", "blocked.json"]) {
+      await symlink(sentinel, join(outputRoot, "worker", name));
+      assert.throws(() => writeAnchoredFile(child.anchor, name, "DUMMY redirected write"), {
+        code: "EEXIST",
+      });
+    }
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY-SENTINEL-UNCHANGED");
+    const digest = writeAnchoredFile(child.anchor, "worker-control.json", "DUMMY control");
+    assert.equal(
+      await readFile(join(outputRoot, "worker", "worker-control.json"), "utf8"),
+      "DUMMY control",
+    );
+    assert.match(digest, /^[0-9a-f]{64}$/u);
+    for (const name of ["../escape.json", "nested/blocked.json", ""]) {
+      assert.throws(() => writeAnchoredFile(child.anchor, name, "DUMMY"));
+    }
+  } finally {
+    child.close();
+    output.close();
+    await rm(outputRoot, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
