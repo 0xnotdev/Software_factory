@@ -54,6 +54,11 @@ export const DUMMY_CLI_SCENARIOS = {
     cleanupFails: false,
     record: { schema_version: 1, ...AUDIT, causes: [] },
   },
+  "forged-provenance": {
+    child: "forged-provenance",
+    cleanupFails: false,
+    record: { schema_version: 1, ...AUDIT, causes: [] },
+  },
   "cleanup-only": { child: "valid", cleanupFails: true, record: compound([CLEANUP]) },
   success: { child: "valid", cleanupFails: false, record: null },
 };
@@ -73,6 +78,7 @@ export function writeDummyCliShims({ anchor, path, scenario, inheritedPath = pro
     semantic: `exec '${process.execPath}' '${dummyEvidence}' "$last" invalid`,
     exit: `printf '%s' '${DUMMY_CLI_SECRET}' >&2; exit 1`,
     valid: `exec '${process.execPath}' '${dummyEvidence}' "$last"`,
+    "forged-provenance": `exec '${process.execPath}' '${dummyEvidence}' "$last" forged-provenance`,
   }[selected.child];
   writeExecutable(
     anchor,

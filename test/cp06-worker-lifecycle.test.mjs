@@ -487,6 +487,7 @@ test("supervisor executable serializes compound worker failures as typed causes"
     "semantic-audit-and-cleanup": compound([audit, cleanup]),
     "child-exit-and-cleanup": compound([childExit, cleanup]),
     "audit-only": { schema_version: 1, ...audit, causes: [] },
+    "forged-provenance": { schema_version: 1, ...audit, causes: [] },
     "cleanup-only": compound([cleanup]),
     success: null,
   };
@@ -537,6 +538,7 @@ test("supervisor executable serializes compound worker failures as typed causes"
               stdio: ["pipe", "pipe", "pipe", helperFd, probeFd],
               env: {
                 ...process.env,
+                CP06_DUMMY_TRUSTED_PROVENANCE: "1",
                 PATH: writeDummyCliShims({ anchor: shims, path: shims, scenario }),
               },
             },

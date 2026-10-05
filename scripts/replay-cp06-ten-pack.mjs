@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openAnchoredDirectory, openProbeOutput, writeArtifactFile, readArtifactFile, withArtifactParent, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput, writeArtifactEntry, readArtifactFile, withArtifactParent, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
 import { readPinnedRegularFile } from "./cp06-guarded-read.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,6 +23,7 @@ const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
 configureOfflineCtxModelDir();
 const reviewer = process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker";
 const commands = [];
+const preparedArtifacts = new Map();
 
 copyFixtureTree(fixtureSource, fixtureRoot);
 openAnchoredDirectory(fixtureRoot, ".factory/state").close();
@@ -327,15 +328,15 @@ for (const task of oracle.tasks) {
   }
   const packCopy = join(rawRoot, `${task.id}.pack.md`);
   const receiptCopy = join(rawRoot, `${task.id}.receipt.json`);
-  writeArtifactFile(packCopy, readArtifactFile(packAbsolute));
-  writeArtifactFile(receiptCopy, readArtifactFile(receiptAbsolute));
+  const packSha256 = await writeFile(packCopy, await readFile(packAbsolute));
+  const receiptSha256 = await writeFile(receiptCopy, await readFile(receiptAbsolute));
   packs.push({
     task_id: task.id,
     risk: task.risk,
     contract: fileEvidence(join(fixtureRoot, `.factory/tasks/${task.id}.yaml`)),
     target_source: fileEvidence(join(fixtureRoot, task.target)),
-    pack: await fileEvidenceAsync(packCopy),
-    receipt: await fileEvidenceAsync(receiptCopy),
+    pack: { path: relative(packCopy), sha256: packSha256 },
+    receipt: { path: relative(receiptCopy), sha256: receiptSha256 },
     token_budget: payload.token_budget,
     estimated_tokens: payload.estimated_tokens,
     byte_budget: payload.byte_budget,
@@ -486,14 +487,14 @@ const manifest = {
   ],
 };
 const manifestPath = join(proofRoot, "evidence.json");
-await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+const manifestSha256 = await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(
   JSON.stringify({
     ok: true,
     gate: "P-06",
     tested_sha: testedSha,
     manifest_path: relative(manifestPath),
-    manifest_sha256: await fileHash(manifestPath),
+    manifest_sha256: manifestSha256,
     fixed_pack_count: packs.length,
     relevant_pack_count: manifest.fixed_sample.relevant_pack_count,
     irrelevant_topical_excerpts: manifest.fixed_sample.irrelevant_topical_excerpts,
@@ -649,17 +650,13 @@ function assertSemantic(status, label) {
 }
 
 async function copyArtifact(path, name) {
-  writeArtifactFile(join(rawRoot, name), readArtifactFile(join(fixtureRoot, path)));
+  await writeFile(join(rawRoot, name), await readFile(join(fixtureRoot, path)));
 }
 
 function fileEvidence(path) {
   const relativePath = relative(path).replace(relative(fixtureRoot), "test/fixtures/cp06-context");
   const bytes = requireRead(path);
   return { path: relativePath, sha256: sha256(bytes) };
-}
-
-async function fileEvidenceAsync(path) {
-  return { path: relative(path), sha256: await fileHash(path) };
 }
 
 function gitText(cwd, args) {
@@ -705,11 +702,15 @@ async function fileHash(path) {
 }
 
 function requireRead(path) {
-  return path.startsWith(`/proc/${process.pid}/fd/`) ? readArtifactFile(path) : readPinnedRegularFile(path).bytes;
+  return path.startsWith(`/proc/${process.pid}/fd/`)
+    ? readArtifactFile(path, undefined, { expected: preparedArtifacts.get(path) })
+    : readPinnedRegularFile(path).bytes;
 }
 
-function requireWrite(path, value) {
-  writeArtifactFile(path, value);
+function requireWrite(path, value, options) {
+  const written = writeArtifactEntry(path, value, { ...options, expected: preparedArtifacts.get(path) });
+  preparedArtifacts.set(path, written.identity);
+  return written.sha256;
 }
 
 async function readFile(path, encoding) {
@@ -718,21 +719,23 @@ async function readFile(path, encoding) {
 }
 
 async function writeFile(path, value) {
-  return writeArtifactFile(path, value, { replace: path === join(fixtureRoot, ".factory/tasks/AUTH-001.yaml") });
+  return requireWrite(path, value, { replace: path === join(fixtureRoot, ".factory/tasks/AUTH-001.yaml") });
 }
 
 async function rm(path) {
   withArtifactParent(path, removeAnchoredEntry);
+  preparedArtifacts.delete(path);
 }
 
-function copyFixtureTree(source, destination) {
+function copyFixtureTree(source, destination, logical = destination) {
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       const child = openAnchoredDirectory(destination, entry.name);
-      try { copyFixtureTree(join(source, entry.name), child.anchor); }
+      try { copyFixtureTree(join(source, entry.name), child.anchor, join(logical, entry.name)); }
       finally { child.close(); }
     } else if (entry.isFile()) {
-      writeArtifactFile(join(destination, entry.name), readPinnedRegularFile(join(source, entry.name)).bytes);
+      const written = writeArtifactEntry(join(destination, entry.name), readPinnedRegularFile(join(source, entry.name)).bytes);
+      preparedArtifacts.set(join(logical, entry.name), written.identity);
     } else throw new Error("DUMMY fixture contains a nonregular entry");
   }
 }

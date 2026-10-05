@@ -69,6 +69,25 @@ test("leaf or parent substitution between preparation and mount is refused", asy
   });
 });
 
+test("symlinked target or source ancestors are refused before external mutation or mount", async () => {
+  await withCompiledHelper("mount-ancestor", async ({ helperFd }) => {
+    for (const scenario of ["target-ancestor-symlink", "source-ancestor-symlink"]) {
+      assert.deepEqual(runMountScenario(helperFd, scenario), {
+        scenario,
+        mounted: false,
+        error: "no-follow-refused",
+        external_entries:
+          scenario === "source-ancestor-symlink"
+            ? ["DUMMY-auth.json", "source"]
+            : ["DUMMY-auth.json"],
+        marker_unchanged: true,
+        source_unchanged: true,
+        remaining_mounts: 0,
+      });
+    }
+  });
+});
+
 test("mount setup failure reports cleanup failure instead of discarding it", async () => {
   const root = await mkdtemp(join(tmpdir(), "factory-cp06-cleanup-test-"));
   const source = join(root, "auth-source.json");

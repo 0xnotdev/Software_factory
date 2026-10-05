@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rename,
   rm,
@@ -21,15 +22,28 @@ const [scenario] = process.argv.slice(2);
 const marker = "DUMMY-EXTERNAL-MARKER";
 const credential = '{"fixture":"DUMMY","token":"DUMMY-NOT-REAL"}';
 const directory = realpathSync(await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-mount-")));
-const source = join(directory, "source", "DUMMY-auth.json");
-const target = join(directory, "agent", "DUMMY-auth.json");
+const realSource = join(directory, "source", "DUMMY-auth.json");
+const source =
+  scenario === "source-ancestor-symlink"
+    ? join(directory, "linked", "source", "DUMMY-auth.json")
+    : realSource;
+const target =
+  scenario === "target-ancestor-symlink"
+    ? join(directory, "home", "pi-agent", "DUMMY-auth.json")
+    : join(directory, "agent", "DUMMY-auth.json");
 const external = join(directory, "external");
 const externalLeaf = join(external, "DUMMY-auth.json");
-await mkdir(dirname(source));
-await mkdir(dirname(target));
+await mkdir(dirname(realSource));
+await mkdir(join(directory, "agent"));
 await mkdir(external);
-await writeFile(source, credential);
+await writeFile(realSource, credential);
 await writeFile(externalLeaf, marker);
+if (scenario === "target-ancestor-symlink") await symlink(external, join(directory, "home"));
+if (scenario === "source-ancestor-symlink") {
+  await mkdir(join(external, "source"));
+  await writeFile(join(external, "source", "DUMMY-auth.json"), marker);
+  await symlink(external, join(directory, "linked"));
+}
 
 const markerReads = [];
 async function substitute(leafPath) {
@@ -46,7 +60,9 @@ async function substitute(leafPath) {
     const parent = dirname(scenario === "target-parent-replaced" ? target : source);
     await rename(parent, `${parent}-moved`);
     await symlink(external, parent);
-  } else if (scenario !== "control") {
+  } else if (
+    !["control", "target-ancestor-symlink", "source-ancestor-symlink"].includes(scenario)
+  ) {
     throw new Error("unsupported DUMMY scenario");
   }
 }
@@ -87,8 +103,14 @@ try {
   result.target_after_cleanup = await readFile(target, "utf8");
 } catch (error) {
   result.mounted = mount !== undefined;
-  result.error = error instanceof AggregateError ? "aggregate" : error.message;
+  result.error =
+    error instanceof AggregateError
+      ? "aggregate"
+      : ["ELOOP", "ENOTDIR"].includes(error.code)
+        ? "no-follow-refused"
+        : error.message;
 }
+if (scenario.endsWith("-ancestor-symlink")) result.external_entries = (await readdir(external)).sort();
 markerReads.push(await readFile(externalLeaf, "utf8"));
 result.marker_unchanged = markerReads.every((value) => value === marker);
 const originalSource =
@@ -96,7 +118,7 @@ const originalSource =
     ? join(directory, "DUMMY-source-moved")
     : scenario === "source-parent-replaced"
       ? join(directory, "source-moved", "DUMMY-auth.json")
-      : source;
+      : realSource;
 result.source_unchanged = (await readFile(originalSource, "utf8")) === credential;
 const listed = spawnSync("findmnt", ["--json", "--list", "--output", "TARGET"], {
   encoding: "utf8",

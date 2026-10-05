@@ -10,13 +10,13 @@ import {
   openSync,
   readFileSync,
   realpathSync,
-  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { resolvePinnedPiAi } from "./cp06-pi-dependency.mjs";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
-import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openProbeOutput, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import { Cp06CleanupError } from "./cp06-worker-lifecycle.mjs";
 import { DUMMY_SDK_ORIGINAL, DUMMY_OUTCOME_ORIGINAL } from "./cp06-dummy-originals.mjs";
 
 export class Cp06IsolationUnsupportedError extends Error {
@@ -460,19 +460,59 @@ export function runDummySdkProof({
   spawnSyncImpl = spawnSync,
   expectedSdkDependency,
 }) {
-  const proofRoot = realpathSync(mkdtempSync(join(tmpdir(), "factory-cp06-DUMMY-sdk-")));
+  const temporaryRoot = realpathSync(tmpdir());
+  const directoryFlags =
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC;
+  const temporaryFd = openSync(temporaryRoot, directoryFlags);
+  const temporaryAnchor = `/proc/${process.pid}/fd/${temporaryFd}`;
+  let name;
+  let proofFd;
+  let result;
+  let primary;
+  let failed = false;
   try {
-    return runDummySdkProofIn({
+    name = basename(mkdtempSync(join(temporaryAnchor, "factory-cp06-DUMMY-sdk-")));
+    proofFd = openSync(join(temporaryAnchor, name), directoryFlags);
+    result = runDummySdkProofIn({
       root,
       helper,
       piRoot,
       spawnSyncImpl,
       expectedSdkDependency,
-      proofRoot,
+      proofRoot: join(temporaryRoot, name),
     });
-  } finally {
-    rmSync(proofRoot, { recursive: true, force: true });
+  } catch (error) {
+    failed = true;
+    primary = error;
   }
+  try {
+    if (name !== undefined) removeRetainedDirectory(temporaryAnchor, name, proofFd);
+  } catch {
+    throw new Cp06CleanupError(
+      failed ? primary : undefined,
+      unsupported("DUMMY SDK proof failed: CP06_DUMMY_SDK_CLEANUP_FAILED"),
+    );
+  } finally {
+    if (proofFd !== undefined) closeSync(proofFd);
+    closeSync(temporaryFd);
+  }
+  if (failed) throw primary;
+  return result;
+}
+
+function removeRetainedDirectory(parentAnchor, name, fd) {
+  let named;
+  try {
+    named = lstatSync(join(parentAnchor, name), { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  const pinned = fd === undefined ? undefined : fstatSync(fd, { bigint: true });
+  if (pinned === undefined || named.dev !== pinned.dev || named.ino !== pinned.ino) {
+    throw new Error("DUMMY SDK proof root identity changed");
+  }
+  removeAnchoredEntry(parentAnchor, name);
 }
 
 function runDummySdkProofIn({

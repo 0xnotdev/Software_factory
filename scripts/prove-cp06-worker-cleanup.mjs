@@ -121,6 +121,7 @@ const cases = await withCleanup(
           CP06_PI_BIN: process.env.CP06_PI_BIN,
           CP06_OUTPUT: proofOutputPath,
           CP06_REVIEWER: "DUMMY cleanup regression",
+          ...(expectedRecord === undefined ? {} : { CP06_DUMMY_TRUSTED_PROVENANCE: "1" }),
         },
       });
       assert.equal(result.error, undefined);

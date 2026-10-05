@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import { mountLiveCredentialReadOnly } from "./cp06-credential-isolation.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 import { createProbeFixture } from "./cp06-probe-fixture.mjs";
-import { validateWorkerEvidence, workerEvidenceContext } from "./cp06-worker-evidence.mjs";
+import {
+  trustedWorkerProvenance,
+  validateWorkerEvidence,
+  workerEvidenceContext,
+} from "./cp06-worker-evidence.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -44,7 +48,11 @@ export async function superviseCredentialChild(options, dependencies = {}) {
         outputRoot: requestedSource,
       });
     } catch (cause) {
-      throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+      const setup = failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+      if (cause instanceof AggregateError) {
+        throw compoundFailure(setup, failure("cleanup", "CP06_CREDENTIAL_CLEANUP_FAILED", 74));
+      }
+      throw setup;
     }
   }
   const source = probe?.source ?? requestedSource;
@@ -93,8 +101,17 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           }
           let workerContext = dependencies.workerContext;
           if (mode === "worker" && !dependencies.spawn) {
-            try { workerContext = workerEvidenceContext(childArgs[0], target, source); }
-            catch { throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70); }
+            try {
+              workerContext = workerEvidenceContext(childArgs[0], target, source, {
+                provenance: trustedWorkerProvenance({
+                  root,
+                  environment: childEnvironment(mode, source, target),
+                  dummy: process.env.CP06_DUMMY_TRUSTED_PROVENANCE === "1",
+                }),
+              });
+            } catch {
+              throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
+            }
           }
           const command = childCommand({
             mode,

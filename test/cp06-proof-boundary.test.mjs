@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { DUMMY_SDK_ORIGINAL, DUMMY_OUTCOME_ORIGINAL } from "../scripts/cp06-dummy-originals.mjs";
 import { spawnSync } from "node:child_process";
-import { readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -139,6 +139,59 @@ test("failed DUMMY probes never forward child output or spawn exceptions", async
         }),
       (error) => error.code === "CP06_ISOLATION_UNSUPPORTED" && !error.message.includes(secret),
     );
+  }
+});
+
+test("DUMMY SDK proof outer cleanup removes child leftovers only through the retained root", async () => {
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-sdk-external-"));
+  const sentinel = join(external, "DUMMY-sentinel");
+  await writeFile(sentinel, "DUMMY SENTINEL UNCHANGED");
+  const leftovers = [];
+  const options = { root: process.cwd(), helper: process.execPath, piRoot: "/DUMMY-pi" };
+  try {
+    assert.throws(
+      () =>
+        runDummySdkProof({
+          ...options,
+          spawnSyncImpl(command, args) {
+            const proofRoot = args.at(-1);
+            leftovers.push(proofRoot);
+            mkdirSync(join(proofRoot, "DUMMY-worker", "nested"), { recursive: true });
+            writeFileSync(join(proofRoot, "DUMMY-worker", "nested", "DUMMY-partial"), "DUMMY");
+            symlinkSync(external, join(proofRoot, "DUMMY-worker", "DUMMY-escape"));
+            return { status: null, error: Object.assign(new Error("DUMMY"), { code: "ETIMEDOUT" }) };
+          },
+        }),
+      (error) =>
+        error.code === "CP06_ISOLATION_UNSUPPORTED" && /CP06_DUMMY_SDK_TIMEOUT/u.test(error.message),
+    );
+    await assert.rejects(readdir(leftovers[0]), { code: "ENOENT" });
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY SENTINEL UNCHANGED");
+
+    assert.throws(
+      () =>
+        runDummySdkProof({
+          ...options,
+          spawnSyncImpl(command, args) {
+            const proofRoot = args.at(-1);
+            leftovers.push(proofRoot, `${proofRoot}-DUMMY-moved`);
+            renameSync(proofRoot, `${proofRoot}-DUMMY-moved`);
+            mkdirSync(proofRoot);
+            writeFileSync(join(proofRoot, "DUMMY-substitute"), "DUMMY SUBSTITUTE UNCHANGED");
+            return { status: 1, stdout: "", stderr: "" };
+          },
+        }),
+      (error) =>
+        error.code === "CP06_CLEANUP_FAILED" &&
+        /CP06_DUMMY_SDK_CHILD_EXIT/u.test(error.errors[0].message) &&
+        /CP06_DUMMY_SDK_CLEANUP_FAILED/u.test(error.errors[1].message),
+    );
+    assert.equal(
+      await readFile(join(leftovers[1], "DUMMY-substitute"), "utf8"),
+      "DUMMY SUBSTITUTE UNCHANGED",
+    );
+  } finally {
+    for (const path of [external, ...leftovers]) await rm(path, { recursive: true, force: true });
   }
 });
 

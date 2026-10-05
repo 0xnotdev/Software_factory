@@ -93,10 +93,9 @@ export async function mountLiveCredentialReadOnly(options) {
     const named = await statPath(sourceMountPath, { bigint: true });
     assertPinnedRegularFile(pinned, named, maxBytes);
 
-    if (options.targetParentAnchor === undefined) {
-      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    }
-    targetParentHandle = await openParent(options.targetParentAnchor, dirname(target));
+    targetParentHandle = await openParent(options.targetParentAnchor, dirname(target), {
+      create: true,
+    });
     const targetParentPath =
       options.targetParentAnchor ?? `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
     targetMountPath = join(targetParentPath, targetLeaf);
@@ -200,14 +199,33 @@ export async function mountLiveCredentialReadOnly(options) {
   }
 }
 
-async function openParent(anchor, path) {
-  return open(
-    anchor ?? path,
-    constants.O_RDONLY |
-      constants.O_DIRECTORY |
-      constants.O_CLOEXEC |
-      (anchor === undefined ? constants.O_NOFOLLOW : 0),
-  );
+async function openParent(anchor, path, { create = false } = {}) {
+  if (anchor !== undefined) {
+    return open(anchor, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_CLOEXEC);
+  }
+  const directoryFlags =
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC;
+  let handle = await open("/", directoryFlags);
+  try {
+    for (const component of resolve(path).split("/").filter(Boolean)) {
+      const child = join(`/proc/${process.pid}/fd/${handle.fd}`, component);
+      if (create) {
+        try {
+          await mkdir(child, { mode: 0o700 });
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+      }
+      const next = await open(child, directoryFlags);
+      await handle.close();
+      handle = next;
+    }
+    const parent = handle;
+    handle = undefined;
+    return parent;
+  } finally {
+    await handle?.close();
+  }
 }
 
 async function createPlaceholder(path) {

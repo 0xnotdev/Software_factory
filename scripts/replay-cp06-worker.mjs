@@ -136,7 +136,8 @@ async function runWorker(workerRoot) {
     isolated.mount_ids_distinct !== true ||
     isolated.parent_roots_read_only !== true ||
     isolated.cleanup !== "pass" ||
-    isolated.child?.result !== "pass"
+    isolated.child?.result !== "pass" ||
+    isolated.child.pi_install?.install_root !== join(realpathSync(root), ".factory/state/cp06-sdk")
   ) {
     const error = new Error("isolated SDK worker omitted a required safety assertion");
     await recordBlocked(workerRoot, error, "isolated-sdk-worker-audit");

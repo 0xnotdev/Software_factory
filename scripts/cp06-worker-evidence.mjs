@@ -2,12 +2,26 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 import { validateReadAudit } from "./cp06-auth-security.mjs";
 import { canonicalWorkerPaths, readPinnedRegularFile } from "./cp06-guarded-read.mjs";
+import { DUMMY_PI_PROVENANCE } from "./cp06-dummy-originals.mjs";
+import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 
-export function workerEvidenceContext(inputPath, target, source) {
+export function workerEvidenceContext(inputPath, target, source, { provenance } = {}) {
   const input = readWorkerInput(inputPath);
   const paths = canonicalWorkerPaths(input, target, source);
   const snapshot = readPinnedRegularFile(paths.originalPath);
-  return { input, paths, original: snapshot.bytes, originalIdentity: snapshot.identity };
+  return { input, paths, original: snapshot.bytes, originalIdentity: snapshot.identity, provenance };
+}
+
+// The supervisor resolves the selected installation itself; the DUMMY
+// expectation is a fixed literal that no genuine installation can report.
+export function trustedWorkerProvenance({ root, environment, dummy = false }) {
+  if (dummy) return DUMMY_PI_PROVENANCE;
+  return resolvePinnedPiInstall({
+    projectRoot: root,
+    packageRoot: environment.CP06_PI_PACKAGE_ROOT,
+    executable: environment.CP06_PI_BIN,
+    environment,
+  }).provenance;
 }
 
 export function readWorkerInput(path) {
@@ -22,7 +36,7 @@ export function readWorkerInput(path) {
   return JSON.parse(readPinnedRegularFile(path).bytes.toString("utf8"));
 }
 
-export function validateWorkerEvidence(child, { input, paths, original, originalIdentity }) {
+export function validateWorkerEvidence(child, { input, paths, original, originalIdentity, provenance }) {
   if (originalIdentity) {
     const current = readPinnedRegularFile(paths.originalPath);
     for (const key of ["dev", "ino", "size", "nlink", "mode", "mtimeNs", "ctimeNs"]) requireValue(current.identity[key] === originalIdentity[key]);
@@ -42,6 +56,7 @@ export function validateWorkerEvidence(child, { input, paths, original, original
   for (const key of ["entry_sha256", "manifest_sha256", "package_sha256"]) requireValue(digest(dependency[key]));
   for (const key of ["root", "entry"]) requireValue(typeof dependency[key] === "string" && dependency[key].startsWith("/"));
   requireValue(typeof dependency.tarball_integrity === "string" && dependency.tarball_integrity.startsWith("sha512-"));
+  requireValue(provenance !== undefined && sameJson(child.pi_install, provenance));
   exact(child.oauth_preflight, ["minimum_validity_ms", "remaining_validity_ms", "refreshed"]);
   requireValue(child.oauth_preflight.refreshed === false && child.oauth_preflight.minimum_validity_ms === input.timeout_ms + 300_000 && Number.isSafeInteger(child.oauth_preflight.remaining_validity_ms) && child.oauth_preflight.remaining_validity_ms >= child.oauth_preflight.minimum_validity_ms);
   exact(child.credential_store, ["reads", "lists", "modify_denials", "delete_denials"]);
@@ -65,6 +80,12 @@ export function validateWorkerEvidence(child, { input, paths, original, original
   return child;
 }
 
+function sameJson(actual, expected) {
+  if (expected === null || typeof expected !== "object") return actual === expected;
+  if (actual === null || typeof actual !== "object" || Array.isArray(actual) !== Array.isArray(expected)) return false;
+  const keys = Object.keys(expected).sort();
+  return Object.keys(actual).sort().join(",") === keys.join(",") && keys.every((key) => sameJson(actual[key], expected[key]));
+}
 function exact(value, keys) {
   requireValue(value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === keys.sort().join(","));
 }

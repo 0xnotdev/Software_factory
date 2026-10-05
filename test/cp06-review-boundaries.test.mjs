@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { closeSync, constants, openSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmodSync, closeSync, constants, openSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { assertHardenedProof, assertUnsafeControl, runIsolationProbe } from "../scripts/cp06-auth-security.mjs";
-import { openProbeOutput, openAnchoredDirectory, readArtifactFile, writeArtifactFile } from "../scripts/cp06-probe-fixture.mjs";
+import { createProbeFixture, openProbeOutput, openAnchoredDirectory, readArtifactFile, writeArtifactEntry, writeArtifactFile } from "../scripts/cp06-probe-fixture.mjs";
 import { superviseCredentialChild, supervisorFailureRecord } from "../scripts/cp06-namespace-supervisor.mjs";
 import { dummyWorkerContext, dummyWorkerEvidence } from "../scripts/cp06-dummy-worker-evidence.mjs";
 import { withCompiledHelper } from "./fixtures/cp06-compiled-helper.mjs";
@@ -46,6 +46,11 @@ test("full semantic contracts reject forged nested evidence inside independently
     { ...good, event_stream: { ...good.event_stream, event_count: 2 } },
     { ...good, event_stream: { ...good.event_stream, read_audit: { ...good.event_stream.read_audit, expected_sha256: "a".repeat(64), returned_sha256: "a".repeat(64), returned_bytes: 1 } } },
     { ...good, pi_install: { ...good.pi_install, extra: "DUMMY-SECRET" } },
+    { ...good, pi_install: { ...good.pi_install, package_root: "/usr/lib/node_modules/@earendil-works/pi-coding-agent" } },
+    { ...good, pi_install: { ...good.pi_install, sdk_entry_sha256: "a".repeat(64) } },
+    { ...good, pi_install: { ...good.pi_install, package_artifact: { ...good.pi_install.package_artifact, tarball_integrity: "sha512-DUMMY-SECRET" } } },
+    { ...good, pi_install: { ...good.pi_install, dependency: { ...good.pi_install.dependency, root: "/usr/lib/node_modules/@earendil-works/pi-ai" } } },
+    { ...good, pi_install: { ...good.pi_install, dependency: { ...good.pi_install.dependency, tarball_integrity: "sha512-DUMMY-SECRET" } } },
   ];
   for (const child of [good, ...variants]) {
     for (const cleanupFails of [false, true]) {
@@ -71,6 +76,133 @@ test("full semantic contracts reject forged nested evidence inside independently
       }
     }
   }
+});
+
+test("worker provenance without an independently trusted expectation is rejected", async () => {
+  const { provenance, ...untrusted } = dummyWorkerContext();
+  assert.ok(provenance);
+  let cleaned = 0;
+  await assert.rejects(
+    superviseCredentialChild({ mode: "worker", source: "/DUMMY-source", target: "/DUMMY-target", helper: "/DUMMY-helper", syscallProbe: "/DUMMY-probe" }, {
+      workerContext: untrusted,
+      mount: async () => ({ mountIds: { source: "1", target: "2" }, parentMounts: ["DUMMY"], verifyIntegrity: async () => true, cleanup: async () => { cleaned++; } }),
+      spawn: () => ({ status: 0, stdout: JSON.stringify(dummyWorkerEvidence(dummyWorkerContext())) }),
+    }),
+    { code: "CP06_CHILD_OUTPUT_INVALID" },
+  );
+  assert.equal(cleaned, 1);
+});
+
+test("artifact replacement and reads are bound to the prepared inode", async () => {
+  const outputRoot = join(state, `DUMMY-review-identity-${process.pid}`);
+  const output = openProbeOutput({ root: process.cwd(), outputRoot, create: true, runner: true });
+  const child = openAnchoredDirectory(output.anchor, "raw");
+  try {
+    const path = join(child.anchor, "DUMMY-task.yaml");
+    const prepared = writeArtifactEntry(path, "DUMMY prepared");
+    assert.equal(readArtifactFile(path, "utf8", { expected: prepared.identity }), "DUMMY prepared");
+    assert.equal(writeArtifactEntry(path, "DUMMY replaced", { replace: true, expected: prepared.identity }).identity.ino, prepared.identity.ino);
+    assert.throws(() => writeArtifactFile(path, "DUMMY unbound", { replace: true }), /identity changed/);
+    await writeFile(join(outputRoot, "raw", "DUMMY-substitute"), "DUMMY SUBSTITUTE UNCHANGED");
+    await rename(join(outputRoot, "raw", "DUMMY-substitute"), join(outputRoot, "raw", "DUMMY-task.yaml"));
+    assert.throws(() => writeArtifactFile(path, "DUMMY write", { replace: true, expected: prepared.identity }), /identity changed/);
+    assert.throws(() => readArtifactFile(path, "utf8", { expected: prepared.identity }), /identity changed/);
+    assert.equal(await readFile(join(outputRoot, "raw", "DUMMY-task.yaml"), "utf8"), "DUMMY SUBSTITUTE UNCHANGED");
+  } finally {
+    child.close(); output.close(); await rm(outputRoot, { recursive: true, force: true });
+  }
+});
+
+test("ten-pack refuses a prepared contract replaced by another regular inode", async () => {
+  await mkdir(state, { recursive: true });
+  const directoryRoot = await mkdtemp(join(state, "DUMMY-runner-"));
+  const contract = join(directoryRoot, "ten-pack/repo/.factory/tasks/AUTH-001.yaml");
+  const hook = join(directoryRoot, "DUMMY-hook.mjs");
+  await writeFile(hook, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module'; const real = fs.openSync; let done = false; fs.openSync = (path, ...rest) => { if (!done && String(path).endsWith('/AUTH-before.yaml')) { done = true; fs.writeFileSync(${JSON.stringify(`${contract}.DUMMY`)}, 'DUMMY SUBSTITUTE UNCHANGED'); fs.renameSync(${JSON.stringify(`${contract}.DUMMY`)}, ${JSON.stringify(contract)}); } return real(path, ...rest); }; syncBuiltinESMExports();`);
+  try {
+    const result = spawnSync(process.execPath, ["--import", hook, resolve("scripts/replay-cp06-ten-pack.mjs")], { env: { ...process.env, CP06_OUTPUT: directoryRoot }, encoding: "utf8", timeout: 30_000 });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /DUMMY proof artifact identity changed/);
+    assert.equal(await readFile(contract, "utf8"), "DUMMY SUBSTITUTE UNCHANGED");
+  } finally { await rm(directoryRoot, { recursive: true, force: true }); }
+});
+
+test("DUMMY fixture cleanup closes every descriptor and removes through its anchor despite failures", async () => {
+  const outputRoot = resolve(state, `DUMMY-fixture-${process.pid}`, "auth-security");
+  const openDescriptors = () => readdirSync("/proc/self/fd").length;
+  try {
+    for (const scenario of ["alias-umount-fails", "setup-and-umount-fail", "setup-fails"]) {
+      const before = openDescriptors();
+      const umounts = [];
+      const spawn = (command, args) => {
+        const path = args.at(-1);
+        if (command === "mount") {
+          if (scenario !== "alias-umount-fails") writeFileSync(join(path, "source"), "DUMMY");
+        } else if (command === "umount") {
+          umounts.push(path.split("/").at(-1));
+          if (scenario === "alias-umount-fails" ? path.endsWith("/DUMMY-alias") : scenario === "setup-and-umount-fail") return { status: 32 };
+        }
+        return { status: 0 };
+      };
+      let caught;
+      try {
+        const fixture = await createProbeFixture({ root: process.cwd(), outputRoot, spawn });
+        await fixture.cleanup();
+      } catch (error) { caught = error; }
+      assert.equal(openDescriptors(), before, scenario);
+      assert.deepEqual(umounts.map((name) => name.replace(/^DUMMY-probe-.*/u, "DUMMY-probe")), scenario === "alias-umount-fails" ? ["DUMMY-alias", "DUMMY-probe"] : ["DUMMY-probe"]);
+      const remaining = (await readdir(outputRoot)).filter((name) => name.startsWith("DUMMY-probe-"));
+      if (scenario === "alias-umount-fails") {
+        assert.ok(caught instanceof AggregateError);
+        assert.deepEqual(caught.errors.map((error) => error.message), ["private DUMMY fixture mount unavailable"]);
+        assert.deepEqual(remaining, []);
+      } else if (scenario === "setup-and-umount-fail") {
+        assert.ok(caught instanceof AggregateError);
+        assert.deepEqual(caught.errors.map((error) => error.code ?? error.message), ["EEXIST", "private DUMMY fixture mount unavailable"]);
+        assert.equal(remaining.length, 1);
+        await rm(join(outputRoot, remaining[0]), { recursive: true });
+      } else {
+        assert.equal(caught?.code, "EEXIST");
+        assert.deepEqual(remaining, []);
+      }
+    }
+  } finally { await rm(resolve(state, `DUMMY-fixture-${process.pid}`), { recursive: true, force: true }); }
+});
+
+test("supervisor CLI serializes fixture setup and independent fixture cleanup causes", async () => {
+  const locate = (command) => spawnSync("sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).stdout.trim();
+  const [realMount, realUmount] = [locate("mount"), locate("umount")];
+  const secret = "DUMMY-SECRET-FIXTURE-MARKER";
+  const base = resolve(state, `DUMMY-fixture-cli-${process.pid}`);
+  const shims = join(base, "shims");
+  const outputRoot = join(base, "auth-security");
+  const setup = { stage: "setup", code: "CP06_ISOLATION_SETUP_FAILED", exit_code: 73, description: "credential namespace setup failed" };
+  const cleanup = { stage: "cleanup", code: "CP06_CREDENTIAL_CLEANUP_FAILED", exit_code: 74, description: "credential mount cleanup failed" };
+  try {
+    for (const umountFails of [true, false]) {
+      await rm(base, { recursive: true, force: true });
+      await mkdir(shims, { recursive: true });
+      for (const [name, body] of [
+        ["mount", `"${realMount}" "$@" || exit $?\ncase "$last" in */DUMMY-probe-*) : > "$last/source" ;; esac`],
+        ["umount", `case "$last" in */DUMMY-probe-*) ${umountFails ? `printf '%s' '${secret}' >&2; exit 32` : ":"} ;; esac\nexec "${realUmount}" "$@"`],
+      ]) {
+        writeFileSync(join(shims, name), `#!/bin/sh\nfor argument do last="$argument"; done\n${body}\n`);
+        chmodSync(join(shims, name), 0o700);
+      }
+      const result = spawnSync("unshare", ["--user", "--map-root-user", "--mount", "--propagation", "private", "--", process.execPath, resolve("scripts/cp06-namespace-supervisor.mjs"), "hardened-probe", outputRoot, "-", "/DUMMY-helper", "/DUMMY-probe"], {
+        encoding: "utf8", timeout: 30_000, env: { ...process.env, PATH: `${shims}:${process.env.PATH}` },
+      });
+      const record = umountFails
+        ? { schema_version: 1, stage: "cleanup", code: "CP06_CLEANUP_FAILED", exit_code: 74, description: "credential namespace cleanup failed", causes: [setup, cleanup] }
+        : { schema_version: 1, ...setup, causes: [] };
+      assert.equal(result.status, record.exit_code, result.stderr);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, `${JSON.stringify(record)}\n`);
+      assert.equal(`${result.stdout}${result.stderr}`.includes(secret), false);
+      const remaining = (await readdir(outputRoot)).filter((name) => name.startsWith("DUMMY-probe-"));
+      assert.equal(remaining.length, umountFails ? 1 : 0);
+    }
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test("artifact writes, replacements, copies and reads reject redirected leaves and intermediate directories", async () => {

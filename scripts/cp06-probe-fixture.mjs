@@ -15,8 +15,8 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { basename, join, relative, resolve } from "node:path";
 
 const original = Buffer.from("DUMMY ORIGINAL");
 const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -180,7 +180,11 @@ function assertArtifactName(name) {
   }
 }
 
-export function writeAnchoredFile(parentAnchor, name, data, { replace = false } = {}) {
+export function writeAnchoredFile(parentAnchor, name, data, options) {
+  return writeAnchoredEntry(parentAnchor, name, data, options).sha256;
+}
+
+export function writeAnchoredEntry(parentAnchor, name, data, { replace = false, expected } = {}) {
   assertArtifactName(name);
   const bytes = Buffer.from(data);
   const path = join(parentAnchor, name);
@@ -198,7 +202,10 @@ export function writeAnchoredFile(parentAnchor, name, data, { replace = false } 
     if (!created.isFile() || created.nlink !== 1n) {
       throw new Error("DUMMY proof artifact is not one fresh regular file");
     }
-    if (!sameInode(created, lstatSync(path, { bigint: true }))) {
+    if (
+      !sameInode(created, lstatSync(path, { bigint: true })) ||
+      (replace && (expected === undefined || !sameInode(expected, created)))
+    ) {
       throw new Error("DUMMY proof artifact identity changed");
     }
     if (replace) ftruncateSync(fd, 0);
@@ -207,19 +214,27 @@ export function writeAnchoredFile(parentAnchor, name, data, { replace = false } 
     if (!sameInode(created, lstatSync(path, { bigint: true }))) {
       throw new Error("DUMMY proof artifact identity changed");
     }
-    return createHash("sha256").update(bytes).digest("hex");
+    return {
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      identity: { dev: created.dev, ino: created.ino },
+    };
   } finally {
     closeSync(fd);
   }
 }
 
-export function readAnchoredFile(parentAnchor, name) {
+export function readAnchoredFile(parentAnchor, name, { expected } = {}) {
   assertArtifactName(name);
   const path = join(parentAnchor, name);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
   try {
     const pinned = fstatSync(fd, { bigint: true });
-    if (!pinned.isFile() || pinned.nlink !== 1n || !sameInode(pinned, lstatSync(path, { bigint: true }))) {
+    if (
+      !pinned.isFile() ||
+      pinned.nlink !== 1n ||
+      !sameInode(pinned, lstatSync(path, { bigint: true })) ||
+      (expected !== undefined && !sameInode(expected, pinned))
+    ) {
       throw new Error("DUMMY proof artifact identity changed");
     }
     const bytes = readFileSync(fd);
@@ -250,11 +265,15 @@ export function withArtifactParent(path, action) {
 }
 
 export function writeArtifactFile(path, data, options) {
-  return withArtifactParent(path, (anchor, name) => writeAnchoredFile(anchor, name, data, options));
+  return writeArtifactEntry(path, data, options).sha256;
 }
 
-export function readArtifactFile(path, encoding) {
-  const bytes = withArtifactParent(path, readAnchoredFile);
+export function writeArtifactEntry(path, data, options) {
+  return withArtifactParent(path, (anchor, name) => writeAnchoredEntry(anchor, name, data, options));
+}
+
+export function readArtifactFile(path, encoding, options) {
+  const bytes = withArtifactParent(path, (anchor, name) => readAnchoredFile(anchor, name, options));
   return encoding ? bytes.toString(encoding) : bytes;
 }
 
@@ -339,32 +358,64 @@ export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }
         }
       },
       async cleanup() {
-        const alias = join(anchoredRoot, "DUMMY-alias");
-        const mountedAlias = spawn("findmnt", ["--mountpoint", alias, "--noheadings"], {
-          encoding: "utf8",
-          timeout: 10_000,
+        const failures = releaseFixture({
+          spawn,
+          output,
+          descriptors: [sourceFd, sourceDirFd, agentDirFd, rootFd],
+          directory,
+          mounted,
+          alias: join(anchoredRoot, "DUMMY-alias"),
         });
-        if (mountedAlias.status === 0) checkedMount(spawn, ["--", alias], "umount");
-        closeSync(sourceFd);
-        closeSync(sourceDirFd);
-        closeSync(agentDirFd);
-        closeSync(rootFd);
-        checkedMount(spawn, ["--", directory], "umount");
         mounted = false;
-        await rm(directory, { recursive: true, force: true });
-        output.close();
+        if (failures.length > 0) {
+          throw new AggregateError(failures, "DUMMY fixture cleanup failed");
+        }
       },
     };
   } catch (error) {
-    if (sourceFd !== undefined) closeSync(sourceFd);
-    if (sourceDirFd !== undefined) closeSync(sourceDirFd);
-    if (agentDirFd !== undefined) closeSync(agentDirFd);
-    if (rootFd !== undefined) closeSync(rootFd);
-    if (mounted) checkedMount(spawn, ["--", directory], "umount");
-    if (directory !== undefined) await rm(directory, { recursive: true, force: true });
-    output.close();
+    const failures = releaseFixture({
+      spawn,
+      output,
+      descriptors: [sourceFd, sourceDirFd, agentDirFd, rootFd],
+      directory,
+      mounted,
+    });
+    if (failures.length > 0) {
+      throw new AggregateError([error, ...failures], "DUMMY fixture setup and cleanup failed");
+    }
     throw error;
   }
+}
+
+function releaseFixture({ spawn, output, descriptors, directory, mounted, alias }) {
+  const failures = [];
+  const attempt = (action) => {
+    try {
+      action();
+      return true;
+    } catch (error) {
+      failures.push(error);
+      return false;
+    }
+  };
+  if (alias !== undefined) {
+    attempt(() => {
+      const mountedAlias = spawn("findmnt", ["--mountpoint", alias, "--noheadings"], {
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      if (mountedAlias.status === 0) checkedMount(spawn, ["--", alias], "umount");
+    });
+  }
+  for (const fd of descriptors) {
+    if (fd !== undefined) attempt(() => closeSync(fd));
+  }
+  const unmounted = !mounted || attempt(() => checkedMount(spawn, ["--", directory], "umount"));
+  if (directory !== undefined && unmounted) {
+    attempt(() => removeAnchoredEntry(output.anchor, basename(directory)));
+  }
+  attempt(() => output.close());
+  return failures;
 }
 
 function hashPinned(fd, length) {
