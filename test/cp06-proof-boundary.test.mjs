@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -22,6 +22,7 @@ import {
 import {
   openAnchoredDirectory,
   openProbeOutput,
+  removeAnchoredEntry,
   writeAnchoredFile,
 } from "../scripts/cp06-probe-fixture.mjs";
 
@@ -491,6 +492,41 @@ test("anchored artifact writes refuse substituted leaves before external mutatio
     }
   } finally {
     child.close();
+    output.close();
+    await rm(outputRoot, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("anchored removal never descends into a directory swapped for a symlink", async () => {
+  const root = process.cwd();
+  const outputRoot = resolve(".factory/state/cp06-correction/DUMMY-anchored-removal");
+  const external = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-removal-external-"));
+  const sentinel = join(external, "DUMMY-sentinel");
+  await writeFile(sentinel, "DUMMY-SENTINEL-UNCHANGED");
+  const output = openProbeOutput({ root, outputRoot, create: true, runner: true });
+  try {
+    await mkdir(join(outputRoot, "DUMMY-tree", "home", "credential"), { recursive: true });
+    await writeFile(join(outputRoot, "DUMMY-tree", "home", "credential", "DUMMY-auth.json"), "x");
+    await symlink(external, join(outputRoot, "DUMMY-tree", "home", "DUMMY-link"));
+    assert.throws(() =>
+      removeAnchoredEntry(output.anchor, "DUMMY-tree", {
+        beforeDescend(path) {
+          if (!path.endsWith("/credential")) return;
+          renameSync(path, `${path}-moved`);
+          symlinkSync(external, path);
+        },
+      }),
+    );
+    assert.deepEqual(await readdir(external), ["DUMMY-sentinel"]);
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY-SENTINEL-UNCHANGED");
+
+    removeAnchoredEntry(output.anchor, "DUMMY-tree");
+    await assert.rejects(readdir(join(outputRoot, "DUMMY-tree")), { code: "ENOENT" });
+    assert.deepEqual(await readdir(external), ["DUMMY-sentinel"]);
+    assert.equal(await readFile(sentinel, "utf8"), "DUMMY-SENTINEL-UNCHANGED");
+    removeAnchoredEntry(output.anchor, "DUMMY-absent");
+  } finally {
     output.close();
     await rm(outputRoot, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });

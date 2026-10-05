@@ -2,12 +2,13 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   openAnchoredDirectory,
   openProbeOutput,
+  removeAnchoredEntry,
   writeAnchoredFile,
 } from "./cp06-probe-fixture.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
@@ -30,7 +31,7 @@ const cases = await withCleanup(
       const homeDirectory = openAnchoredDirectory(scratchDirectory.anchor, scenario);
       const temporaryDirectory = openAnchoredDirectory(homeDirectory.anchor, "tmp");
       const credentialDirectory = openAnchoredDirectory(homeDirectory.anchor, "credential");
-      const home = join(scratchDirectory.anchor, scenario);
+      const home = homeDirectory.anchor;
       const temporary = join(homeDirectory.anchor, "tmp");
       const proofOutputPath = join(proofRootPath, "proofs", scenario);
       const proofOutputDirectory = openAnchoredDirectory(
@@ -124,7 +125,7 @@ const cases = await withCleanup(
   },
   async () => {
     try {
-      await rm(join(proofRoot, "DUMMY-cleanup"), { recursive: true, force: true });
+      removeAnchoredEntry(proofRoot, "DUMMY-cleanup");
     } finally {
       scratchDirectory.close();
     }

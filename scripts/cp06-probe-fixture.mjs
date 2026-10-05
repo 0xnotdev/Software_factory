@@ -8,7 +8,9 @@ import {
   mkdirSync,
   openSync,
   readSync,
-  rmSync,
+  readdirSync,
+  rmdirSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -105,7 +107,7 @@ export function openAnchoredDirectory(
     for (const [index, component] of components.entries()) {
       const path = join(currentAnchor, component);
       if (reset && index === components.length - 1) {
-        rmSync(path, { recursive: true, force: true });
+        removeAnchoredEntry(currentAnchor, component);
       }
       if (create) {
         try {
@@ -133,7 +135,37 @@ export function openAnchoredDirectory(
   }
 }
 
-export function writeAnchoredFile(parentAnchor, name, data) {
+export function removeAnchoredEntry(parentAnchor, name, { beforeDescend } = {}) {
+  assertArtifactName(name);
+  const path = join(parentAnchor, name);
+  let entry;
+  try {
+    entry = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!entry.isDirectory()) {
+    unlinkSync(path);
+    return;
+  }
+  beforeDescend?.(path);
+  const fd = openSync(path, directoryFlags);
+  try {
+    if (!sameInode(entry, fstatSync(fd, { bigint: true }))) {
+      throw new Error("DUMMY proof directory identity changed during removal");
+    }
+    const anchor = `/proc/${process.pid}/fd/${fd}`;
+    for (const child of readdirSync(anchor)) {
+      removeAnchoredEntry(anchor, child, { beforeDescend });
+    }
+  } finally {
+    closeSync(fd);
+  }
+  rmdirSync(path);
+}
+
+function assertArtifactName(name) {
   if (
     typeof name !== "string" ||
     name.length === 0 ||
@@ -144,6 +176,10 @@ export function writeAnchoredFile(parentAnchor, name, data) {
   ) {
     throw new Error("DUMMY proof artifact name is invalid");
   }
+}
+
+export function writeAnchoredFile(parentAnchor, name, data) {
+  assertArtifactName(name);
   const bytes = Buffer.from(data);
   const path = join(parentAnchor, name);
   const fd = openSync(
