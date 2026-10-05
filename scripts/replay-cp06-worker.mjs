@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { closeSync, constants, openSync, realpathSync } from "node:fs";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 import {
   openAnchoredDirectory,
   openProbeOutput,
+  removeAnchoredEntry,
   writeAnchoredFile,
 } from "./cp06-probe-fixture.mjs";
 import {
@@ -83,7 +84,20 @@ async function runWorker(workerRoot) {
   };
   const inputPath = join(workerRoot, "input.json");
   writeAnchoredFile(workerRoot, "input.json", `${JSON.stringify(workerInput, null, 2)}\n`);
-  const evaluationHome = await mkdtemp(join(tmpdir(), "factory-cp06-sdk-worker-"));
+  const temporaryRoot = realpathSync(tmpdir());
+  const temporaryFd = openSync(
+    temporaryRoot,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+  );
+  const temporaryAnchor = `/proc/${process.pid}/fd/${temporaryFd}`;
+  let evaluationName;
+  try {
+    evaluationName = basename(await mkdtemp(join(temporaryAnchor, "factory-cp06-sdk-worker-")));
+  } catch (error) {
+    closeSync(temporaryFd);
+    throw error;
+  }
+  const evaluationHome = join(temporaryRoot, evaluationName);
   const credentialTarget = join(evaluationHome, "pi-agent", "auth.json");
   const credentialSource = resolve(
     process.env.CP06_PI_AUTH_FILE ??
@@ -102,7 +116,13 @@ async function runWorker(workerRoot) {
           inputPath,
           timeout: timeoutMs + 60_000,
         }),
-      () => rm(evaluationHome, { recursive: true, force: true }),
+      () => {
+        try {
+          removeAnchoredEntry(temporaryAnchor, evaluationName);
+        } finally {
+          closeSync(temporaryFd);
+        }
+      },
     );
   } catch (error) {
     await recordBlocked(workerRoot, error, "isolated-sdk-worker");

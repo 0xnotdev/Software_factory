@@ -521,6 +521,30 @@ test("anchored removal never descends into a directory swapped for a symlink", a
     assert.deepEqual(await readdir(external), ["DUMMY-sentinel"]);
     assert.equal(await readFile(sentinel, "utf8"), "DUMMY-SENTINEL-UNCHANGED");
 
+    await rm(join(outputRoot, "DUMMY-tree", "home", "credential"));
+    await mkdir(join(outputRoot, "DUMMY-tree", "home", "credential"));
+    const substitute = join(outputRoot, "DUMMY-substitute");
+    await mkdir(substitute);
+    await writeFile(join(substitute, "DUMMY-substitute-sentinel"), "DUMMY-SUBSTITUTE-UNCHANGED");
+    assert.throws(
+      () =>
+        removeAnchoredEntry(output.anchor, "DUMMY-tree", {
+          beforeDescend(path) {
+            if (!path.endsWith("/credential")) return;
+            renameSync(path, `${path}-replaced`);
+            renameSync(substitute, path);
+          },
+        }),
+      /identity changed during removal/,
+    );
+    assert.equal(
+      await readFile(
+        join(outputRoot, "DUMMY-tree", "home", "credential", "DUMMY-substitute-sentinel"),
+        "utf8",
+      ),
+      "DUMMY-SUBSTITUTE-UNCHANGED",
+    );
+
     removeAnchoredEntry(output.anchor, "DUMMY-tree");
     await assert.rejects(readdir(join(outputRoot, "DUMMY-tree")), { code: "ENOENT" });
     assert.deepEqual(await readdir(external), ["DUMMY-sentinel"]);
