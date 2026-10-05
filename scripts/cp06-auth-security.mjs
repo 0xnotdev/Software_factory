@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { resolvePinnedPiAi } from "./cp06-pi-dependency.mjs";
 import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
 import { openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { DUMMY_SDK_ORIGINAL, DUMMY_OUTCOME_ORIGINAL } from "./cp06-dummy-originals.mjs";
 
 export class Cp06IsolationUnsupportedError extends Error {
   constructor(message) {
@@ -260,7 +261,8 @@ export async function runIsolationProbe({
 }
 
 function runNamespace(options) {
-  return withInheritedExecutables([options.helper, options.syscallProbe], ([helper, probe]) =>
+  const inputs = options.mode === "worker" ? [options.helper, options.syscallProbe, options.childArgs[0]] : [options.helper, options.syscallProbe];
+  return withInheritedExecutables(inputs, ([helper, probe, input]) =>
     spawnSync(
       "unshare",
       [
@@ -277,7 +279,7 @@ function runNamespace(options) {
         options.mode === "worker" ? resolve(options.target) : "-",
         helper.path,
         probe.path,
-        ...options.childArgs.map((value) => resolve(value)),
+        ...(input ? [input.path] : options.childArgs.map((value) => resolve(value))),
       ],
       {
         cwd: options.root,
@@ -285,7 +287,7 @@ function runNamespace(options) {
         timeout: options.timeout,
         maxBuffer: 1024 * 1024,
         env: options.environment ?? process.env,
-        stdio: ["pipe", "pipe", "pipe", helper.fd, probe.fd],
+        stdio: ["pipe", "pipe", "pipe", helper.fd, probe.fd, ...(input ? [input.fd] : [])],
       },
     ),
   );
@@ -298,7 +300,7 @@ function withInheritedExecutables(paths, action) {
   try {
     for (const [index, path] of paths.entries()) {
       descriptors.push({
-        fd: openSync(resolve(path), constants.O_RDONLY | constants.O_CLOEXEC),
+        fd: openSync(resolve(path), constants.O_RDONLY | constants.O_CLOEXEC | (index >= 2 ? constants.O_NOFOLLOW : 0)),
         path: `/proc/self/fd/${index + 3}`,
       });
     }
@@ -360,7 +362,7 @@ const SUPERVISOR_FAILURE_CODES = new Map([
   ["CP06_CREDENTIAL_CLEANUP_FAILED", "cleanup"],
 ]);
 
-function assertUnsafeControl(proof) {
+export function assertUnsafeControl(proof) {
   assert(proof.mode === "unsafe-probe", "unsafe control mode mismatch");
   assert(proof.mount_ids_distinct === true, "unsafe control lacked distinct mounts");
   assert(proof.source_unchanged === false, "unsafe control did not mutate DUMMY source");
@@ -376,7 +378,7 @@ function assertUnsafeControl(proof) {
   );
 }
 
-function assertHardenedProof(proof) {
+export function assertHardenedProof(proof) {
   assert(proof.mode === "hardened-probe", "hardened proof mode mismatch");
   assert(proof.mount_ids_distinct === true, "hardened proof lacked distinct mounts");
   assert(proof.source_unchanged === true, "hardened child changed DUMMY source");
@@ -428,16 +430,27 @@ function assertHardenedProof(proof) {
   );
   const syscalls = proof.child.direct_namespace_syscalls;
   assert(syscalls.exit === 0, "direct syscall probe failed to execute");
-  for (const expected of [
-    "setns=-1:1",
-    "unshare=-1:1",
-    "clone=-1:1",
-    "clone3=-1:38",
-    "mount=-1:1",
-    "umount2=-1:1",
-  ]) {
-    assert(syscalls.stdout.includes(expected), `direct syscall was not filtered: ${expected}`);
+  const observations = new Map();
+  for (const line of syscalls.stdout.split("\n")) {
+    const [key, value, extra] = line.split("=");
+    assert(key && value && extra === undefined && !observations.has(key), "syscall observations malformed");
+    observations.set(key, value);
   }
+  for (const prefix of ["", "inherited_"]) {
+    for (const name of ["setns", "unshare", "clone", "mount", "umount2", "ptrace_attach", "ptrace_seize", "process_vm_readv", "process_vm_writev", "pidfd_getfd"]) {
+      assert(observations.get(`${prefix}${name}`) === "-1:1", "required DUMMY syscall denial missing");
+    }
+    assert(observations.get(`${prefix}clone3`) === "-1:38", "clone3 denial missing");
+    assert(observations.get(`${prefix}pidfd_open`) === "opened", "DUMMY pidfd target unavailable");
+    assert(observations.get(`${prefix}proc_mem`) === "-1:13", "DUMMY proc memory denial missing");
+    assert(observations.get(`${prefix}securebits`) === "15", "locked root securebits missing");
+    assert(observations.get(`${prefix}NoNewPrivs`) === "1", "inherited no_new_privs missing");
+    assert(observations.get(`${prefix}Seccomp`) === "2", "inherited seccomp missing");
+    for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) {
+      assert(observations.get(`${prefix}${name}`) === "0000000000000000", "inherited capabilities not empty");
+    }
+  }
+  assert(observations.get("dummy_target_unchanged") === "true", "DUMMY target integrity missing");
 }
 
 export function runDummySdkProof({
@@ -627,6 +640,8 @@ function validateSdkWorker(worker, originalPath) {
   validateReadAudit(worker.read_audit, {
     toolCallId: "DUMMY-read",
     originalPath,
+    original: DUMMY_SDK_ORIGINAL,
+    eventCount: worker.event_count,
   });
 }
 
@@ -711,7 +726,7 @@ function validateOutcomeProof(outcomes, trustedDependency, originalPath) {
       "source_unchanged",
       "to_auth",
     ];
-    if (["valid", "fenced-valid"].includes(entry.scenario)) expectedKeys.push("read_audit");
+    if (["valid", "fenced-valid"].includes(entry.scenario)) expectedKeys.push("read_audit", "event_count");
     assertExactKeys(entry, expectedKeys);
     seen.add(entry.scenario);
     assert(
@@ -735,6 +750,8 @@ function validateOutcomeProof(outcomes, trustedDependency, originalPath) {
       validateReadAudit(entry.read_audit, {
         toolCallId: "DUMMY-actual-worker-read",
         originalPath,
+        original: DUMMY_OUTCOME_ORIGINAL,
+        eventCount: entry.event_count,
       });
     }
   }
@@ -752,7 +769,7 @@ function validateCredentialAudit(audit, expected) {
   assert(audit.reads >= 1, "DUMMY credential audit omitted the credential read");
 }
 
-function validateReadAudit(audit, { toolCallId, originalPath }) {
+export function validateReadAudit(audit, { toolCallId, originalPath, original, eventCount }) {
   assertExactKeys(audit, [
     "completed_successfully",
     "end_event_index",
@@ -771,7 +788,11 @@ function validateReadAudit(audit, { toolCallId, originalPath }) {
     "tool_call_id",
   ]);
   const isEmptyArray = (value) => Array.isArray(value) && value.length === 0;
-  const isIndex = (value) => Number.isSafeInteger(value) && value >= 0;
+  assert(Number.isSafeInteger(eventCount) && eventCount > 0, "read audit event count missing");
+  assert(typeof original === "string" || Buffer.isBuffer(original), "read audit trusted bytes missing");
+  const expectedBytes = Buffer.from(original);
+  const expectedHash = sha256(expectedBytes);
+  const isIndex = (value) => Number.isSafeInteger(value) && value >= 0 && value < eventCount;
   assert(
     audit.read_count === 1 &&
       audit.project_read_count === 1 &&
@@ -788,10 +809,9 @@ function validateReadAudit(audit, { toolCallId, originalPath }) {
     "DUMMY exact original read missing",
   );
   assert(
-    isSha256(audit.expected_sha256) &&
-      audit.returned_sha256 === audit.expected_sha256 &&
-      Number.isSafeInteger(audit.returned_bytes) &&
-      audit.returned_bytes > 0,
+    audit.expected_sha256 === expectedHash &&
+      audit.returned_sha256 === expectedHash &&
+      audit.returned_bytes === expectedBytes.length,
     "DUMMY read audit bytes mismatch",
   );
   assert(audit.tool_call_id === toolCallId, "DUMMY read audit tool call mismatch");
@@ -937,6 +957,10 @@ function summarizeHardened(proof) {
     capability_sets_zero: true,
     no_new_privs: true,
     seccomp_filter: true,
+    locked_root_securebits: 15,
+    dummy_process_memory_denials: true,
+    inherited_subprocess_denials: true,
+    dummy_process_target_unchanged: true,
     ordinary_child_allowed: true,
     direct_writes_denied: true,
     replacement_denied: true,

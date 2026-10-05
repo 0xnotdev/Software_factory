@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { readdirSync, realpathSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { proveDummyWorkerOutcome } from "./cp06-dummy-outcome-proof.mjs";
 import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
+import { openAnchoredDirectory, readArtifactFile, writeArtifactFile, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import { DUMMY_SDK_ORIGINAL } from "./cp06-dummy-originals.mjs";
+import { createGuardedReadTool, openPinnedDirectory } from "./cp06-guarded-read.mjs";
 
 const [piRootArg, proofRootArg] = process.argv.slice(2);
 if (!piRootArg || !proofRootArg) process.exit(64);
@@ -23,6 +25,8 @@ globalThis.fetch = async () => {
 };
 const proofRoot = realpathSync(resolve(proofRootArg));
 if (proofRoot !== resolve(proofRootArg) || readdirSync(proofRoot).length !== 0) process.exit(64);
+const proofFd = openPinnedDirectory(proofRoot);
+const proofAnchor = `/proc/${process.pid}/fd/${proofFd}`;
 try {
   const authCases = [];
   for (const scenario of [
@@ -36,6 +40,7 @@ try {
   const outcomeProof = await proveDummyWorkerOutcome({
     piRoot,
     directory: join(proofRoot, "DUMMY-outcome"),
+    parentAnchor: proofAnchor,
   });
   assert.equal(networkCalls, 0);
   console.log(
@@ -53,14 +58,16 @@ try {
   );
 } finally {
   globalThis.fetch = originalFetch;
-  for (const entry of readdirSync(proofRoot)) {
-    await rm(join(proofRoot, entry), { recursive: true, force: true });
+  try {
+    for (const entry of readdirSync(proofAnchor)) removeAnchoredEntry(proofAnchor, entry);
+  } finally {
+    closeSync(proofFd);
   }
 }
 
 async function authCase(scenario) {
   const providerId = "openai-codex";
-  const path = join(proofRoot, `DUMMY-${scenario.name}.json`);
+  const path = join(proofAnchor, `DUMMY-${scenario.name}.json`);
   await writeFile(
     path,
     JSON.stringify({
@@ -125,13 +132,14 @@ async function authCase(scenario) {
 }
 
 async function fauxWorkerProof() {
+  const workerDirectory = openAnchoredDirectory(proofAnchor, "DUMMY-worker");
+  try {
   const workerRoot = join(proofRoot, "DUMMY-worker");
   const originalPath = join(workerRoot, "DUMMY-original.md");
-  const authPath = join(workerRoot, "DUMMY-auth.json");
-  await import("node:fs/promises").then(({ mkdir }) => mkdir(workerRoot));
-  const original =
-    "# DUMMY authority\n\nrequest-supplied owner fields are ignored; ownership comes only from the authenticated principal.\n";
-  await writeFile(originalPath, original);
+  const authPath = join(workerDirectory.anchor, "DUMMY-auth.json");
+  const original = DUMMY_SDK_ORIGINAL;
+  writeArtifactFile(join(workerDirectory.anchor, "DUMMY-original.md"), original);
+  const guardedRead = createGuardedReadTool({ sdk, root: workerRoot, expectedOriginalPath: originalPath });
   const faux = ai.fauxProvider({
     provider: "DUMMY-readonly",
     models: [{ id: "DUMMY-model" }],
@@ -197,6 +205,7 @@ async function fauxWorkerProof() {
     modelRuntime: runtime,
     resourceLoader,
     tools: ["read"],
+    customTools: [guardedRead.tool],
     sessionManager: sdk.SessionManager.inMemory(workerRoot),
     settingsManager: sdk.SettingsManager.inMemory({
       compaction: { enabled: false },
@@ -230,6 +239,15 @@ async function fauxWorkerProof() {
     refresh_callbacks: refreshCallbacks,
     credential_store: store.audit(),
   };
+  } finally { workerDirectory.close(); }
+}
+
+async function writeFile(path, bytes) {
+  writeArtifactFile(path, bytes);
+}
+
+async function readFile(path) {
+  return readArtifactFile(path);
 }
 
 function sha256(value) {

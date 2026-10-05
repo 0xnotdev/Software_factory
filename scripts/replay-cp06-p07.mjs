@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { realpathSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput, writeArtifactFile, readArtifactFile } from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
@@ -68,14 +68,14 @@ const manifest = {
   ],
 };
 const manifestPath = join(p07Root.anchor, "evidence.json");
-await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+const manifestHash = writeArtifactFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(
   JSON.stringify({
     ok: true,
     gate: "P-07",
     tested_sha: testedSha,
     manifest_path: relative(manifestPath),
-    manifest_sha256: await fileHash(manifestPath),
+    manifest_sha256: manifestHash,
     sequence: steps.map(({ id, command, exit_code, output_path, output_sha256 }) => ({
       id,
       command,
@@ -91,7 +91,7 @@ function run(id, command, args, expectedExit, expectedOutputFragments = []) {
   const exitCode = result.status;
   const output = `command: ${quote([command, ...args])}\nexit: ${exitCode}\n--- stdout ---\n${result.stdout ?? ""}\n--- stderr ---\n${result.stderr ?? ""}`;
   const outputPath = join(rawRoot, `${id}.txt`);
-  writeFileSync(outputPath, output);
+  writeArtifactFile(outputPath, output);
   const missingFragments = expectedOutputFragments.filter((fragment) => !output.includes(fragment));
   if (result.error !== undefined || exitCode !== expectedExit || missingFragments.length > 0) {
     process.stderr.write(output);
@@ -136,6 +136,6 @@ function sha256(text) {
 
 async function fileHash(path) {
   return createHash("sha256")
-    .update(await readFile(path))
+    .update(path.startsWith(`/proc/${process.pid}/fd/`) ? readArtifactFile(path) : await readFile(path))
     .digest("hex");
 }

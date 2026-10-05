@@ -4,6 +4,9 @@ import { spawnSync } from "node:child_process";
 import {
   linkSync,
   mkdirSync,
+  closeSync,
+  constants,
+  openSync,
   readFileSync,
   renameSync,
   rmdirSync,
@@ -99,7 +102,15 @@ if (securityMode === "hardened") {
   jsAttempt("hardlink_into_source_parent", () =>
     linkSync(source, join(dirname(source), "DUMMY-parent-hardlink")),
   );
-  commandAttempt("direct_namespace_syscalls", syscallProbe, [target]);
+  const probeFd = openSync(syscallProbe, constants.O_RDONLY | constants.O_CLOEXEC);
+  try {
+    commandAttempt("direct_namespace_syscalls", "/proc/self/fd/3", [target], {
+      stdio: ["ignore", "pipe", "pipe", probeFd],
+    });
+  } finally {
+    closeSync(probeFd);
+    closeSync(Number(syscallProbe.split("/").at(-1)));
+  }
 } else {
   results.direct_namespace_syscalls = { exit: null, skipped: true };
 }

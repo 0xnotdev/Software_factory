@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { closeSync } from "node:fs";
+import { readWorkerInput } from "./cp06-worker-evidence.mjs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,7 +20,8 @@ if (!credentialTargetArg || !inputPathArg) process.exit(64);
 
 try {
   const credentialTarget = resolve(credentialTargetArg);
-  const input = JSON.parse(await readFile(resolve(inputPathArg), "utf8"));
+  const input = readWorkerInput(resolve(inputPathArg));
+  if (inputPathArg === "/proc/self/fd/4") closeSync(4);
   validateInput(input);
   const paths = canonicalWorkerPaths(input, credentialTarget, process.env.CP06_CREDENTIAL_SOURCE);
   const pi = resolvePiPackage();

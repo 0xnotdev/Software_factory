@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
+import { DUMMY_SDK_ORIGINAL, DUMMY_OUTCOME_ORIGINAL } from "../scripts/cp06-dummy-originals.mjs";
 import { spawnSync } from "node:child_process";
 import { readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
@@ -153,7 +155,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
     sdk_worker: {
       active_tools: ["read"],
       in_memory_session: true,
-      event_count: 2,
+      event_count: 47,
       event_sha256: "0".repeat(64),
       read_audit: readAudit("DUMMY-read", "@ROOT@/DUMMY-worker/DUMMY-original.md"),
       refresh_callbacks: 0,
@@ -189,6 +191,10 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
   };
   for (const payload of [
     { ...validBase, auth_cases: [] },
+    { ...validBase, sdk_worker: { ...validBase.sdk_worker, event_count: 2 } },
+    { ...validBase, sdk_worker: { ...validBase.sdk_worker, read_audit: { ...validBase.sdk_worker.read_audit, expected_sha256: "a".repeat(64), returned_sha256: "a".repeat(64), returned_bytes: 1 } } },
+    { ...validBase, actual_sdk_outcomes: { ...validBase.actual_sdk_outcomes, cases: validBase.actual_sdk_outcomes.cases.map((entry) => entry.scenario === "valid" ? { ...entry, event_count: 2 } : entry) } },
+    { ...validBase, actual_sdk_outcomes: { ...validBase.actual_sdk_outcomes, cases: validBase.actual_sdk_outcomes.cases.map((entry) => entry.scenario === "valid" ? { ...entry, read_audit: { ...entry.read_audit, expected_sha256: "a".repeat(64), returned_sha256: "a".repeat(64), returned_bytes: 1 } } : entry) } },
     { ...validBase, auth_cases: [...validBase.auth_cases, authCase("expired", "blocked", 0)] },
     { ...validBase, extra: "DUMMY-SECRET" },
     { ...validBase, sdk_dependency: { ...validBase.sdk_dependency, version: "0.99.2" } },
@@ -418,9 +424,9 @@ function readAudit(toolCallId, originalPath) {
     other_tool_completions: [],
     completed_successfully: true,
     exact_original: true,
-    expected_sha256: "5".repeat(64),
-    returned_sha256: "5".repeat(64),
-    returned_bytes: 117,
+    expected_sha256: createHash("sha256").update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL).digest("hex"),
+    returned_sha256: createHash("sha256").update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL).digest("hex"),
+    returned_bytes: Buffer.byteLength(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL),
     tool_call_id: toolCallId,
     start_event_index: 12,
     end_event_index: 13,
@@ -461,6 +467,7 @@ function outcome(scenario, exitCode, extra = {}) {
   };
   if (["valid", "fenced-valid"].includes(scenario)) {
     result.read_audit = readAudit("DUMMY-actual-worker-read", "@ROOT@/DUMMY-outcome/docs/AUTH.md");
+    result.event_count = 47;
   }
   return result;
 }

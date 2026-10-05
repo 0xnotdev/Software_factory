@@ -8,6 +8,8 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  readFileSync,
+  ftruncateSync,
   readdirSync,
   rmdirSync,
   unlinkSync,
@@ -178,7 +180,7 @@ function assertArtifactName(name) {
   }
 }
 
-export function writeAnchoredFile(parentAnchor, name, data) {
+export function writeAnchoredFile(parentAnchor, name, data, { replace = false } = {}) {
   assertArtifactName(name);
   const bytes = Buffer.from(data);
   const path = join(parentAnchor, name);
@@ -186,7 +188,7 @@ export function writeAnchoredFile(parentAnchor, name, data) {
     path,
     constants.O_WRONLY |
       constants.O_CREAT |
-      constants.O_EXCL |
+      (replace ? 0 : constants.O_EXCL) |
       constants.O_NOFOLLOW |
       constants.O_CLOEXEC,
     0o600,
@@ -196,6 +198,10 @@ export function writeAnchoredFile(parentAnchor, name, data) {
     if (!created.isFile() || created.nlink !== 1n) {
       throw new Error("DUMMY proof artifact is not one fresh regular file");
     }
+    if (!sameInode(created, lstatSync(path, { bigint: true }))) {
+      throw new Error("DUMMY proof artifact identity changed");
+    }
+    if (replace) ftruncateSync(fd, 0);
     let offset = 0;
     while (offset < bytes.length) offset += writeSync(fd, bytes, offset, bytes.length - offset);
     if (!sameInode(created, lstatSync(path, { bigint: true }))) {
@@ -205,6 +211,51 @@ export function writeAnchoredFile(parentAnchor, name, data) {
   } finally {
     closeSync(fd);
   }
+}
+
+export function readAnchoredFile(parentAnchor, name) {
+  assertArtifactName(name);
+  const path = join(parentAnchor, name);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  try {
+    const pinned = fstatSync(fd, { bigint: true });
+    if (!pinned.isFile() || pinned.nlink !== 1n || !sameInode(pinned, lstatSync(path, { bigint: true }))) {
+      throw new Error("DUMMY proof artifact identity changed");
+    }
+    const bytes = readFileSync(fd);
+    const current = fstatSync(fd, { bigint: true });
+    if (!sameInode(pinned, lstatSync(path, { bigint: true })) ||
+        current.size !== pinned.size || current.mtimeNs !== pinned.mtimeNs ||
+        current.ctimeNs !== pinned.ctimeNs) {
+      throw new Error("DUMMY proof artifact identity changed");
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function withArtifactParent(path, action) {
+  const match = String(path).match(new RegExp(`^(/proc/${process.pid}/fd/\\d+)/(.+)$`, "u"));
+  if (!match) throw new Error("DUMMY proof artifact must use a retained directory");
+  const components = match[2].split("/");
+  const name = components.pop();
+  assertArtifactName(name);
+  const parent = components.length ? openAnchoredDirectory(match[1], components.join("/"), { create: false }) : null;
+  try {
+    return action(parent?.anchor ?? match[1], name);
+  } finally {
+    parent?.close();
+  }
+}
+
+export function writeArtifactFile(path, data, options) {
+  return withArtifactParent(path, (anchor, name) => writeAnchoredFile(anchor, name, data, options));
+}
+
+export function readArtifactFile(path, encoding) {
+  const bytes = withArtifactParent(path, readAnchoredFile);
+  return encoding ? bytes.toString(encoding) : bytes;
 }
 
 export async function createProbeFixture({ root, outputRoot, spawn = spawnSync }) {

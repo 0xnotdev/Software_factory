@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { closeSync, constants, openSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mountLiveCredentialReadOnly } from "./cp06-credential-isolation.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
 import { createProbeFixture } from "./cp06-probe-fixture.mjs";
+import { validateWorkerEvidence, workerEvidenceContext } from "./cp06-worker-evidence.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -89,6 +91,11 @@ export async function superviseCredentialChild(options, dependencies = {}) {
               throw failure("source-integrity", "CP06_SOURCE_IDENTITY_CHANGED", 74, cause);
             }
           }
+          let workerContext = dependencies.workerContext;
+          if (mode === "worker" && !dependencies.spawn) {
+            try { workerContext = workerEvidenceContext(childArgs[0], target, source); }
+            catch { throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70); }
+          }
           const command = childCommand({
             mode,
             source,
@@ -101,13 +108,25 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           });
           let result;
           try {
-            result = spawn(command.command, command.args, {
+            const launch = (stdio) => spawn(command.command, command.args, {
               cwd: probe?.cwd ?? root,
               encoding: "utf8",
               env: childEnvironment(mode, source, target),
               timeout: mode === "worker" ? 600_000 : 60_000,
               maxBuffer: 1024 * 1024,
+              stdio,
             });
+            if (dependencies.spawn) result = launch(undefined);
+            else {
+              const paths = mode === "unsafe-probe" ? [syscallProbe] : mode === "hardened-probe" ? [helper, syscallProbe] : [helper, childArgs[0]];
+              const fds = [];
+              try {
+                for (const path of paths) fds.push(openSync(path, constants.O_RDONLY | constants.O_CLOEXEC));
+                result = launch(["pipe", "pipe", "pipe", ...fds]);
+              } finally {
+                for (const fd of fds) closeSync(fd);
+              }
+            }
           } catch (cause) {
             throw failure("launch", "CP06_CHILD_LAUNCH_FAILED", 70, cause);
           }
@@ -144,7 +163,12 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           } catch {
             throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
           }
-          if (!validChildContract(mode, childEvidence)) {
+          try {
+            if (!validChildContract(mode, childEvidence)) throw new Error();
+            if (mode === "worker") {
+              validateWorkerEvidence(childEvidence, workerContext);
+            }
+          } catch {
             throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
           }
           return {
@@ -233,7 +257,7 @@ function childCommand({
         "unsafe",
         childSource,
         childTarget,
-        syscallProbe,
+        "/proc/self/fd/3",
         beforeHash,
         String(process.pid),
       ],
@@ -247,7 +271,7 @@ function childCommand({
           "hardened",
           childSource,
           childTarget,
-          syscallProbe,
+          "/proc/self/fd/4",
           beforeHash,
           String(process.pid),
         ]
@@ -256,7 +280,8 @@ function childCommand({
           "--experimental-import-meta-resolve",
           resolve(root, "scripts/cp06-sdk-worker.mjs"),
           target,
-          ...childArgs,
+          "/proc/self/fd/4",
+          ...childArgs.slice(1),
         ];
   return {
     command: "setpriv",
@@ -267,7 +292,8 @@ function childCommand({
       "--ambient-caps=-all",
       "--securebits=+noroot,+noroot_locked,+no_setuid_fixup,+no_setuid_fixup_locked",
       "--",
-      helper,
+      "/proc/self/fd/3",
+      "--cp06-readonly-fd=4",
       ...program,
     ],
   };
@@ -414,7 +440,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     console.log(
       JSON.stringify(
-        await superviseCredentialChild({ mode, source, target, helper, syscallProbe, childArgs }),
+        await superviseCredentialChild({ mode, source, target, helper, syscallProbe, childArgs: childArgs.map((path) => /^\/proc\/self\/fd\/\d+$/u.test(path) ? `/proc/${process.pid}/fd/${path.slice("/proc/self/fd/".length)}` : path) }),
       ),
     );
   } catch (error) {

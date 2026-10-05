@@ -49,14 +49,17 @@ static void deny(scmp_filter_ctx ctx, const char *name, int error) {
   }
 }
 
-static void close_inherited_fds(void) {
+static void close_inherited_fds(int retained) {
 #ifdef SYS_close_range
-  if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+  if (retained == 4) {
+    close(3);
+    if (syscall(SYS_close_range, 5U, ~0U, 0U) == 0) return;
+  } else if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
   if (errno != ENOSYS) fail("close_range");
 #endif
   long limit = sysconf(_SC_OPEN_MAX);
   if (limit < 0 || limit > 1048576) limit = 1048576;
-  for (int fd = 3; fd < limit; ++fd) close(fd);
+  for (int fd = 3; fd < limit; ++fd) if (fd != retained) close(fd);
 }
 
 /*
@@ -160,7 +163,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "CP-06 supervisor disappeared before isolation\n");
     return 70;
   }
-  close_inherited_fds();
+  int retained = -1;
+  if (strcmp(argv[1], "--cp06-readonly-fd=4") == 0) {
+    struct stat st;
+    if (argc < 3 || fstat(4, &st) != 0 || !S_ISREG(st.st_mode) ||
+        (fcntl(4, F_GETFL) & O_ACCMODE) != O_RDONLY) return 64;
+    retained = 4;
+    ++argv;
+    --argc;
+  }
+  close_inherited_fds(retained);
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) fail("PR_SET_NO_NEW_PRIVS");
 
   scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);

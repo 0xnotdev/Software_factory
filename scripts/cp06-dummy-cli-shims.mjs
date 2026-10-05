@@ -3,6 +3,7 @@
 // replaced; every other setpriv/umount invocation runs the real command.
 import { accessSync, closeSync, constants, openSync, writeSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const AUDIT = {
   stage: "audit",
@@ -59,21 +60,7 @@ export const DUMMY_CLI_SCENARIOS = {
 
 export const DUMMY_CLI_SECRET = "DUMMY-SECRET-CLI-MARKER";
 
-const VALID_WORKER_CHILD = {
-  schema_version: 1,
-  result: "pass",
-  pi_version: "0.85.1",
-  pi_install: { fixture_origin: true },
-  provider: "DUMMY",
-  model: "DUMMY",
-  credential_store: { fixture_origin: true },
-  oauth_preflight: { refreshed: false },
-  session: { in_memory: true, active_tools: ["read"] },
-  event_stream: { read_audit: { exact_original: true, read_count: 1 } },
-  response: { fixture_origin: true },
-  response_sha256: "0".repeat(64),
-  raw_transcript_retained: false,
-};
+const dummyEvidence = fileURLToPath(new URL("./cp06-dummy-worker-evidence.mjs", import.meta.url));
 
 /** Write scenario shims into `anchor`; returns a PATH that resolves them first. */
 export function writeDummyCliShims({ anchor, path, scenario, inheritedPath = process.env.PATH }) {
@@ -83,14 +70,15 @@ export function writeDummyCliShims({ anchor, path, scenario, inheritedPath = pro
   const realUmount = locate("umount", inheritedPath);
   const child = {
     malformed: `printf '%s' '${DUMMY_CLI_SECRET} malformed'; printf '%s' '${DUMMY_CLI_SECRET}' >&2; exit 0`,
-    semantic: `printf '%s' '{"result":"fail","detail":"${DUMMY_CLI_SECRET}"}'; exit 0`,
+    semantic: `exec '${process.execPath}' '${dummyEvidence}' "$last" invalid`,
     exit: `printf '%s' '${DUMMY_CLI_SECRET}' >&2; exit 1`,
-    valid: `printf '%s' '${JSON.stringify(VALID_WORKER_CHILD)}'; exit 0`,
+    valid: `exec '${process.execPath}' '${dummyEvidence}' "$last"`,
   }[selected.child];
   writeExecutable(
     anchor,
     "setpriv",
     `#!/bin/sh
+for argument do last="$argument"; done
 for argument do
   case "$argument" in
     */scripts/cp06-sdk-worker.mjs) ${child} ;;

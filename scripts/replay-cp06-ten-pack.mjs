@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, realpathSync, readdirSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openAnchoredDirectory, openProbeOutput } from "./cp06-probe-fixture.mjs";
+import { openAnchoredDirectory, openProbeOutput, writeArtifactFile, readArtifactFile, withArtifactParent, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import { readPinnedRegularFile } from "./cp06-guarded-read.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureSource = join(root, "test/fixtures/cp06-context");
@@ -14,7 +15,8 @@ const output = openProbeOutput({ root, outputRoot, create: true, runner: true })
 const proofDirectory = openAnchoredDirectory(output.anchor, "ten-pack", { reset: true });
 const rawDirectory = openAnchoredDirectory(proofDirectory.anchor, "raw");
 const proofRoot = proofDirectory.anchor;
-const fixtureRoot = join(proofRoot, "repo");
+const fixtureDirectory = openAnchoredDirectory(proofRoot, "repo");
+const fixtureRoot = fixtureDirectory.anchor;
 const rawRoot = rawDirectory.anchor;
 const cli = join(root, "dist/src/cli.js");
 const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
@@ -22,8 +24,8 @@ configureOfflineCtxModelDir();
 const reviewer = process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker";
 const commands = [];
 
-await cp(fixtureSource, fixtureRoot, { recursive: true });
-await mkdir(join(fixtureRoot, ".factory/state"), { recursive: true });
+copyFixtureTree(fixtureSource, fixtureRoot);
+openAnchoredDirectory(fixtureRoot, ".factory/state").close();
 const oracle = JSON.parse(await readFile(join(fixtureRoot, "oracle.json"), "utf8"));
 const fixedAuth = await readFile(join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"), "utf8");
 const beforeAuth = await readFile(join(fixtureRoot, "cases/AUTH-before.yaml"), "utf8");
@@ -325,8 +327,8 @@ for (const task of oracle.tasks) {
   }
   const packCopy = join(rawRoot, `${task.id}.pack.md`);
   const receiptCopy = join(rawRoot, `${task.id}.receipt.json`);
-  await cp(packAbsolute, packCopy);
-  await cp(receiptAbsolute, receiptCopy);
+  writeArtifactFile(packCopy, readArtifactFile(packAbsolute));
+  writeArtifactFile(receiptCopy, readArtifactFile(receiptAbsolute));
   packs.push({
     task_id: task.id,
     risk: task.risk,
@@ -647,7 +649,7 @@ function assertSemantic(status, label) {
 }
 
 async function copyArtifact(path, name) {
-  await cp(join(fixtureRoot, path), join(rawRoot, name));
+  writeArtifactFile(join(rawRoot, name), readArtifactFile(join(fixtureRoot, path)));
 }
 
 function fileEvidence(path) {
@@ -699,15 +701,38 @@ function sha256(value) {
 }
 
 async function fileHash(path) {
-  return createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex");
+  return sha256(requireRead(path));
 }
 
 function requireRead(path) {
-  return readFileSync(path);
+  return path.startsWith(`/proc/${process.pid}/fd/`) ? readArtifactFile(path) : readPinnedRegularFile(path).bytes;
 }
 
 function requireWrite(path, value) {
-  writeFileSync(path, value);
+  writeArtifactFile(path, value);
+}
+
+async function readFile(path, encoding) {
+  const bytes = requireRead(path);
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+async function writeFile(path, value) {
+  return writeArtifactFile(path, value, { replace: path === join(fixtureRoot, ".factory/tasks/AUTH-001.yaml") });
+}
+
+async function rm(path) {
+  withArtifactParent(path, removeAnchoredEntry);
+}
+
+function copyFixtureTree(source, destination) {
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      const child = openAnchoredDirectory(destination, entry.name);
+      try { copyFixtureTree(join(source, entry.name), child.anchor); }
+      finally { child.close(); }
+    } else if (entry.isFile()) {
+      writeArtifactFile(join(destination, entry.name), readPinnedRegularFile(join(source, entry.name)).bytes);
+    } else throw new Error("DUMMY fixture contains a nonregular entry");
+  }
 }

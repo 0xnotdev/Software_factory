@@ -29,6 +29,8 @@ import {
   writeDummyCliShims,
 } from "../scripts/cp06-dummy-cli-shims.mjs";
 import { withCompiledHelper } from "./fixtures/cp06-compiled-helper.mjs";
+import { dummyWorkerContext, dummyWorkerEvidence } from "../scripts/cp06-dummy-worker-evidence.mjs";
+import { DUMMY_OUTCOME_ORIGINAL } from "../scripts/cp06-dummy-originals.mjs";
 
 for (const scenario of [
   "success",
@@ -70,6 +72,7 @@ for (const scenario of [
           childArgs: ["/DUMMY-input"],
         },
         {
+          workerContext: dummyWorkerContext(),
           async mount() {
             if (scenario === "setup") throw setupError;
             if (scenario === "setup-and-cleanup") {
@@ -499,6 +502,16 @@ test("supervisor executable serializes compound worker failures as typed causes"
         await mkdir(shims);
         await mkdir(join(directory, "credential"));
         await writeFile(source, sourceBytes);
+        await mkdir(join(directory, "docs"));
+        await writeFile(join(directory, "docs/AUTH.md"), DUMMY_OUTCOME_ORIGINAL);
+        await writeFile(join(directory, "DUMMY-contract.yaml"), "DUMMY contract");
+        await writeFile(join(directory, "DUMMY-pack.md"), "DUMMY pack");
+        await writeFile(join(directory, "DUMMY-input.json"), JSON.stringify({
+          schema_version: 1, root: directory, fixture_root: directory,
+          original_path: join(directory, "docs/AUTH.md"),
+          contract_path: join(directory, "DUMMY-contract.yaml"), pack_path: join(directory, "DUMMY-pack.md"),
+          provider: "openai-codex", model: "DUMMY-model", timeout_ms: 1_000,
+        }));
         try {
           const result = spawnSync(
             "unshare",
@@ -585,6 +598,7 @@ test("worker source integrity uses metadata without reading credential bytes", a
         syscallProbe: "/DUMMY-probe",
       },
       {
+        workerContext: dummyWorkerContext(),
         async mount() {
           return {
             sourceIdentity,
@@ -712,25 +726,7 @@ test("audit and cleanup causes survive supervisor output and replay blocked reco
 });
 
 function validWorkerChild() {
-  return {
-    schema_version: 1,
-    result: "pass",
-    pi_version: "0.85.1",
-    pi_install: { version: "0.85.1" },
-    provider: "openai-codex",
-    model: "DUMMY-model",
-    oauth_preflight: { minimum_validity_ms: 1, remaining_validity_ms: 2, refreshed: false },
-    credential_store: { reads: 1, lists: 0, modify_denials: 0, delete_denials: 0 },
-    session: { in_memory: true, active_tools: ["read"] },
-    event_stream: {
-      sha256: "0".repeat(64),
-      event_count: 3,
-      read_audit: { exact_original: true, read_count: 1 },
-    },
-    response: { status: "MISSING_SOURCE" },
-    response_sha256: "1".repeat(64),
-    raw_transcript_retained: false,
-  };
+  return dummyWorkerEvidence();
 }
 
 function validProbeChild() {

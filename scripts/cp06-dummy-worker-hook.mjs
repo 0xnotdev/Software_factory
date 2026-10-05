@@ -1,8 +1,10 @@
 // Development-only local provider instrumentation. Never a live semantic proof.
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
+import { writeAnchoredFile } from "./cp06-probe-fixture.mjs";
+import { openPinnedDirectory, readPinnedRegularFile } from "./cp06-guarded-read.mjs";
 
 const piRoot = process.env.CP06_DUMMY_PI_ROOT;
 const countersPath = process.env.CP06_DUMMY_COUNTERS;
@@ -11,7 +13,8 @@ if (!piRoot || !countersPath || !scenario) throw new Error("DUMMY proof configur
 const sdk = await import(pathToFileURL(join(piRoot, "dist/index.js")));
 const { AuthStorage } = await import(pathToFileURL(join(piRoot, "dist/core/auth-storage.js")));
 const { module: ai, provenance: piAi } = await importPinnedPiAi(piRoot);
-const input = JSON.parse(readFileSync(process.argv[3], "utf8"));
+const input = JSON.parse(readPinnedRegularFile(process.argv[3]).bytes.toString("utf8"));
+const countersFd = openPinnedDirectory(dirname(countersPath));
 const counts = {
   fixture_origin: true,
   sdk_dependency: piAi,
@@ -121,4 +124,8 @@ sdk.ModelRuntime.create = async function (options) {
   ]);
   return runtime;
 };
-process.on("exit", (exit) => writeFileSync(countersPath, JSON.stringify({ ...counts, exit })));
+process.on("exit", (exit) => {
+  try {
+    writeAnchoredFile(`/proc/${process.pid}/fd/${countersFd}`, basename(countersPath), JSON.stringify({ ...counts, exit }));
+  } finally { closeSync(countersFd); }
+});
