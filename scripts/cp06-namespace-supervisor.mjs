@@ -59,6 +59,7 @@ export async function superviseCredentialChild(options, dependencies = {}) {
               root,
               source,
               target,
+              mountHelper: helper,
               protectParents: mode !== "unsafe-probe",
               sourceParentAnchor: probe?.credentialAnchors?.sourceParent,
               targetParentAnchor: probe?.credentialAnchors?.targetParent,
@@ -403,7 +404,13 @@ const FAILURE_DESCRIPTIONS = {
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [mode, source, target, helper, syscallProbe, ...childArgs] = process.argv.slice(2);
+  const [mode, source, target, inheritedHelper, inheritedProbe, ...childArgs] =
+    process.argv.slice(2);
+  const [helper, syscallProbe] = [inheritedHelper, inheritedProbe].map((path) =>
+    /^\/proc\/self\/fd\/\d+$/u.test(path ?? "")
+      ? `/proc/${process.pid}/fd/${path.slice("/proc/self/fd/".length)}`
+      : path,
+  );
   try {
     console.log(
       JSON.stringify(

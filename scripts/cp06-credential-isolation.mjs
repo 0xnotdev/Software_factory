@@ -35,6 +35,7 @@ export async function proveDummyCredentialIsolation(options = {}) {
       root,
       source,
       target,
+      mountHelper: options.mountHelper,
       spawnSyncImpl: options.spawnSyncImpl,
     });
     await assertDestructiveCredentialWritesDenied([source, target]);
@@ -58,39 +59,32 @@ export async function proveDummyCredentialIsolation(options = {}) {
 /**
  * Pin one regular credential inode, bind it over both its source path and a fresh
  * regular target, and make both mount instances read-only before closing the FD.
+ * The native helper consumes the retained source and destination descriptors.
  * This function must run only in the private setup namespace.
  */
 export async function mountLiveCredentialReadOnly(options) {
   const root = resolve(options.root ?? process.cwd());
   const source = resolveRequiredPath(options.source, "credential source");
   const target = resolveRequiredPath(options.target, "credential target");
+  const helper = resolveRequiredPath(options.mountHelper, "credential mount helper");
   const maxBytes = options.maxBytes ?? MAX_CREDENTIAL_BYTES;
   const spawn = options.spawnSyncImpl ?? spawnSync;
   const statPath = options.lstatImpl ?? lstat;
   const protectParents = options.protectParents !== false;
+  const sourceLeaf = options.sourceLeaf ?? basename(source);
+  const targetLeaf = options.targetLeaf ?? basename(target);
   let handle;
   let sourceParentHandle;
   let targetParentHandle;
-  let closeSourceParentHandle = true;
-  let closeTargetParentHandle = true;
-  let sourceMounted = false;
-  let targetMounted = false;
   let sourceMountPath = source;
   let targetMountPath = target;
-  const mountedParents = [];
+  const mountStack = [];
   let parentHandlesTransferred = false;
   try {
-    let sourceParentPath = options.sourceParentAnchor;
-    if (sourceParentPath === undefined) {
-      sourceParentHandle = await open(
-        dirname(source),
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-      );
-      sourceParentPath = `/proc/${process.pid}/fd/${sourceParentHandle.fd}`;
-    } else {
-      closeSourceParentHandle = false;
-    }
-    sourceMountPath = join(sourceParentPath, options.sourceLeaf ?? basename(source));
+    sourceParentHandle = await openParent(options.sourceParentAnchor, dirname(source));
+    const sourceParentPath =
+      options.sourceParentAnchor ?? `/proc/${process.pid}/fd/${sourceParentHandle.fd}`;
+    sourceMountPath = join(sourceParentPath, sourceLeaf);
     handle = await open(
       sourceMountPath,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
@@ -99,45 +93,33 @@ export async function mountLiveCredentialReadOnly(options) {
     const named = await statPath(sourceMountPath, { bigint: true });
     assertPinnedRegularFile(pinned, named, maxBytes);
 
-    let targetParentPath = options.targetParentAnchor;
-    if (targetParentPath === undefined) {
+    if (options.targetParentAnchor === undefined) {
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-      targetParentHandle = await open(
-        dirname(target),
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
-      );
-      targetParentPath = `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
-    } else {
-      closeTargetParentHandle = false;
     }
-    targetMountPath = join(targetParentPath, options.targetLeaf ?? basename(target));
-    await writeFile(targetMountPath, "", { flag: "wx", mode: 0o600 });
+    targetParentHandle = await openParent(options.targetParentAnchor, dirname(target));
+    const targetParentPath =
+      options.targetParentAnchor ?? `/proc/${process.pid}/fd/${targetParentHandle.fd}`;
+    targetMountPath = join(targetParentPath, targetLeaf);
+    const placeholder = await createPlaceholder(targetMountPath);
+    await options.beforeMount?.({ sourceMountPath, targetMountPath });
+
+    const mountOptions = { helper, root, spawn };
+    bindFile(mountOptions, handle, pinned, sourceParentHandle, sourceLeaf, pinned, source);
+    mountStack.push({ path: sourceMountPath, recursive: false });
+    bindFile(mountOptions, handle, pinned, targetParentHandle, targetLeaf, placeholder, target);
+    mountStack.push({ path: targetMountPath, recursive: false });
     const parentMounts = [];
     if (protectParents) {
-      for (const parent of [...new Set([sourceParentPath, targetParentPath])]) {
-        checkedSpawn("mount", ["--bind", parent, parent], { root, spawn });
-        mountedParents.push(parent);
-        checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", parent], {
-          root,
-          spawn,
-        });
-        parentMounts.push(inspectReadOnlyMount(parent, { spawn }));
+      const parents = await uniqueParents([
+        { handle: sourceParentHandle, path: sourceParentPath, visible: dirname(source) },
+        { handle: targetParentHandle, path: targetParentPath, visible: dirname(target) },
+      ]);
+      for (const parent of parents) {
+        bindTree(mountOptions, parent);
+        mountStack.push({ path: parent.path, recursive: true });
+        parentMounts.push(inspectReadOnlyMount(parent.path, { spawn }));
       }
     }
-    const pinnedPath = `/proc/${process.pid}/fd/${handle.fd}`;
-
-    checkedSpawn("mount", ["--bind", pinnedPath, sourceMountPath], { root, spawn });
-    sourceMounted = true;
-    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", sourceMountPath], {
-      root,
-      spawn,
-    });
-    checkedSpawn("mount", ["--bind", pinnedPath, targetMountPath], { root, spawn });
-    targetMounted = true;
-    checkedSpawn("mount", ["-o", "remount,bind,ro,nosuid,nodev,noexec", targetMountPath], {
-      root,
-      spawn,
-    });
 
     const sourceMount = inspectReadOnlyMount(sourceMountPath, { spawn });
     const targetMount = inspectReadOnlyMount(targetMountPath, { spawn });
@@ -181,25 +163,19 @@ export async function mountLiveCredentialReadOnly(options) {
         if (cleaned) return;
         cleaned = true;
         const failures = [];
-        if (targetMounted) unmount(targetMountPath, { root, spawn, failures });
-        if (sourceMounted) unmount(sourceMountPath, { root, spawn, failures });
-        for (const parent of [...mountedParents].reverse()) {
-          unmount(parent, { root, spawn, failures });
-        }
-        const closeFailures = [];
-        try {
-          if (closeSourceParentHandle) await sourceParentHandle?.close();
-        } catch (error) {
-          closeFailures.push(error?.message ?? "source parent close failed");
-        }
-        try {
-          if (closeTargetParentHandle) await targetParentHandle?.close();
-        } catch (error) {
-          closeFailures.push(error?.message ?? "target parent close failed");
+        unmountAll(mountStack, { root, spawn, failures });
+        for (const [label, parentHandle] of [
+          ["source", sourceParentHandle],
+          ["target", targetParentHandle],
+        ]) {
+          try {
+            await parentHandle?.close();
+          } catch (error) {
+            failures.push(error?.message ?? `${label} parent close failed`);
+          }
         }
         sourceParentHandle = undefined;
         targetParentHandle = undefined;
-        failures.push(...closeFailures);
         if (failures.length > 0) {
           throw new Error(`credential mount cleanup failed: ${failures.join("; ")}`);
         }
@@ -207,11 +183,7 @@ export async function mountLiveCredentialReadOnly(options) {
     };
   } catch (error) {
     const cleanupFailures = [];
-    if (targetMounted) unmount(targetMountPath, { root, spawn, failures: cleanupFailures });
-    if (sourceMounted) unmount(sourceMountPath, { root, spawn, failures: cleanupFailures });
-    for (const parent of [...mountedParents].reverse()) {
-      unmount(parent, { root, spawn, failures: cleanupFailures });
-    }
+    unmountAll(mountStack, { root, spawn, failures: cleanupFailures });
     if (cleanupFailures.length > 0) {
       throw new AggregateError(
         [error, ...cleanupFailures.map((message) => new Error(message))],
@@ -222,10 +194,81 @@ export async function mountLiveCredentialReadOnly(options) {
   } finally {
     await handle?.close();
     if (!parentHandlesTransferred) {
-      if (closeSourceParentHandle) await sourceParentHandle?.close();
-      if (closeTargetParentHandle) await targetParentHandle?.close();
+      await sourceParentHandle?.close();
+      await targetParentHandle?.close();
     }
   }
+}
+
+async function openParent(anchor, path) {
+  return open(
+    anchor ?? path,
+    constants.O_RDONLY |
+      constants.O_DIRECTORY |
+      constants.O_CLOEXEC |
+      (anchor === undefined ? constants.O_NOFOLLOW : 0),
+  );
+}
+
+async function createPlaceholder(path) {
+  const placeholder = await open(
+    path,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW |
+      constants.O_CLOEXEC,
+    0o600,
+  );
+  try {
+    const identity = await placeholder.stat({ bigint: true });
+    if (!identity.isFile() || identity.nlink !== 1n) {
+      throw new Error("credential target placeholder is not one fresh regular file");
+    }
+    return identity;
+  } finally {
+    await placeholder.close();
+  }
+}
+
+async function uniqueParents(parents) {
+  const unique = new Map();
+  for (const parent of parents) {
+    const identity = await parent.handle.stat({ bigint: true });
+    const key = `${identity.dev}:${identity.ino}`;
+    if (!unique.has(key)) unique.set(key, { ...parent, identity });
+  }
+  return [...unique.values()].sort(
+    (left, right) => right.visible.split("/").length - left.visible.split("/").length,
+  );
+}
+
+function bindFile(options, sourceHandle, sourceIdentity, parentHandle, leaf, expected, visible) {
+  checkedSpawn(
+    options.helper,
+    [
+      "--cp06-bind-file",
+      String(sourceIdentity.dev),
+      String(sourceIdentity.ino),
+      leaf,
+      String(expected.dev),
+      String(expected.ino),
+      visible,
+    ],
+    { ...options, fds: [sourceHandle.fd, parentHandle.fd] },
+  );
+}
+
+function bindTree(options, parent) {
+  checkedSpawn(
+    options.helper,
+    ["--cp06-bind-tree", String(parent.identity.dev), String(parent.identity.ino), parent.visible],
+    { ...options, fds: [parent.handle.fd] },
+  );
+}
+
+function unmountAll(mounted, options) {
+  for (const entry of [...mounted].reverse()) unmount(entry.path, { ...options, ...entry });
 }
 
 export async function assertDestructiveCredentialWritesDenied(paths, operations = {}) {
@@ -333,6 +376,7 @@ function checkedSpawn(command, args, options) {
   const result = options.spawn(command, args, {
     cwd: options.root,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe", ...(options.fds ?? [])],
   });
   if (result.error !== undefined) throw result.error;
   if (result.status !== 0) {
@@ -344,7 +388,7 @@ function checkedSpawn(command, args, options) {
 }
 
 function unmount(path, options) {
-  const result = options.spawn("umount", [path], {
+  const result = options.spawn("umount", options.recursive ? ["--recursive", path] : [path], {
     cwd: options.root,
     encoding: "utf8",
   });

@@ -12,6 +12,11 @@ import {
   writeAnchoredFile,
 } from "./cp06-probe-fixture.mjs";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
+import {
+  DUMMY_CLI_SCENARIOS,
+  DUMMY_CLI_SECRET,
+  writeDummyCliShims,
+} from "./cp06-dummy-cli-shims.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
@@ -23,10 +28,14 @@ const scratchDirectory = openAnchoredDirectory(proofRoot, "DUMMY-cleanup", { res
 const cases = await withCleanup(
   async () => {
     const cases = [];
-    for (const [scenario, expectedExit] of [
+    const compoundScenarios = Object.entries(DUMMY_CLI_SCENARIOS)
+      .filter(([, { record }]) => record !== null)
+      .map(([scenario, { record }]) => [scenario, record.exit_code, record]);
+    for (const [scenario, expectedExit, expectedRecord] of [
       ["expired", 75],
       ["near-expiry", 75],
       ["missing-source-setup", 70],
+      ...compoundScenarios,
     ]) {
       const homeDirectory = openAnchoredDirectory(scratchDirectory.anchor, scenario);
       const temporaryDirectory = openAnchoredDirectory(homeDirectory.anchor, "tmp");
@@ -41,12 +50,22 @@ const cases = await withCleanup(
       );
       const proofOutput = proofOutputDirectory.anchor;
       const source = join(homeDirectory.anchor, "credential", "DUMMY-auth.json");
+      const namespaceSource = join(
+        proofRootPath,
+        "DUMMY-cleanup",
+        scenario,
+        "credential",
+        "DUMMY-auth.json",
+      );
       const sourceBytes = JSON.stringify({
         "openai-codex": {
           type: "oauth",
           access: "DUMMY-ACCESS",
           refresh: "DUMMY-REFRESH",
-          expires: scenario === "expired" ? 0 : Date.now() + 60_000,
+          expires:
+            scenario === "expired"
+              ? 0
+              : Date.now() + (expectedRecord === undefined ? 60_000 : 3_600_000),
         },
       });
       if (scenario !== "missing-source-setup") {
@@ -69,6 +88,19 @@ const cases = await withCleanup(
         rawDirectory.close();
         docsDirectory.close();
       }
+      let path = process.env.PATH;
+      if (expectedRecord !== undefined) {
+        const shimDirectory = openAnchoredDirectory(homeDirectory.anchor, "shims");
+        try {
+          path = writeDummyCliShims({
+            anchor: shimDirectory.anchor,
+            path: join(proofRootPath, "DUMMY-cleanup", scenario, "shims"),
+            scenario,
+          });
+        } finally {
+          shimDirectory.close();
+        }
+      }
       const args = [
         "--experimental-import-meta-resolve",
         join(root, "scripts/replay-cp06-worker.mjs"),
@@ -79,12 +111,12 @@ const cases = await withCleanup(
         timeout: 180_000,
         maxBuffer: 1024 * 1024,
         env: {
-          PATH: process.env.PATH,
+          PATH: path,
           HOME: home,
           TMPDIR: temporary,
           PI_OFFLINE: "1",
           PI_SKIP_VERSION_CHECK: "1",
-          CP06_PI_AUTH_FILE: source,
+          CP06_PI_AUTH_FILE: namespaceSource,
           CP06_PI_PACKAGE_ROOT: process.env.CP06_PI_PACKAGE_ROOT,
           CP06_PI_BIN: process.env.CP06_PI_BIN,
           CP06_OUTPUT: proofOutputPath,
@@ -93,11 +125,21 @@ const cases = await withCleanup(
       });
       assert.equal(result.error, undefined);
       assert.equal(result.status, expectedExit, result.stderr);
-      const blocked = JSON.parse(
-        await readFile(join(proofOutputPath, "worker/blocked.json"), "utf8"),
-      );
+      const blockedText = await readFile(join(proofOutputPath, "worker/blocked.json"), "utf8");
+      const blocked = JSON.parse(blockedText);
       assert.equal(blocked.result, "blocked");
       assert.equal(blocked.stage, "isolated-sdk-worker");
+      if (expectedRecord !== undefined) {
+        assert.equal(result.stdout, "");
+        assert.equal(
+          result.stderr,
+          `${expectedRecord.code}: CP-06 isolated SDK worker exited ${expectedExit}\n`,
+        );
+        assert.equal(`${result.stderr}${blockedText}`.includes(DUMMY_CLI_SECRET), false);
+        assert.deepEqual(blocked.worker_failure, expectedRecord);
+        assert.equal(blocked.code, expectedRecord.code);
+        assert.equal(blocked.cleanup_failed, expectedRecord.code === "CP06_CLEANUP_FAILED");
+      }
       assert.deepEqual(await readdir(temporary), [], `${scenario}: evaluation home leaked`);
       if (scenario !== "missing-source-setup")
         assert.equal(await readFile(source, "utf8"), sourceBytes);
@@ -115,6 +157,8 @@ const cases = await withCleanup(
         expected_exit_code: expectedExit,
         stage: blocked.stage,
         worker_failure: blocked.worker_failure,
+        child_and_cleanup_injection:
+          expectedRecord === undefined ? null : "DUMMY setpriv/umount PATH shims",
         evaluation_home_removed: true,
         source_unchanged: scenario === "missing-source-setup" ? null : true,
         fixture_origin: true,
@@ -136,7 +180,9 @@ assert.equal(git.status, 0);
 const sources = [
   "scripts/replay-cp06-worker.mjs",
   "scripts/cp06-namespace-supervisor.mjs",
+  "scripts/cp06-credential-isolation.mjs",
   "scripts/cp06-worker-lifecycle.mjs",
+  "scripts/cp06-dummy-cli-shims.mjs",
   "scripts/prove-cp06-worker-cleanup.mjs",
 ];
 const manifest = {
@@ -162,7 +208,7 @@ const manifest = {
     ),
   ),
   limitations: [
-    "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Launch, timeout, audit and compound cleanup failures are additionally injected through stubbed mount and spawn dependencies at the in-process supervisor interface in the unit suite, not through an executable CLI boundary; SDK timeout is exercised by the DUMMY auth-security proof.",
+    "Actual full-runner expired/near-expiry and missing-source setup cases use DUMMY auth only. Malformed-output, semantic-audit and child-exit plus cleanup failure, audit-only and cleanup-only cases run through the replay CLI, namespace supervisor and real descriptor-bound mounts, but the evaluated child is replaced by a DUMMY setpriv shim and the credential-target unmount by a failing DUMMY umount shim; they prove failure composition, not SDK behavior. Launch and timeout failures are injected only in-process in the unit suite; SDK timeout is exercised by the DUMMY auth-security proof.",
   ],
 };
 writeAnchoredFile(proofRoot, "evidence.json", `${JSON.stringify(manifest, null, 2)}\n`);

@@ -129,7 +129,7 @@ test("failed DUMMY probes never forward child output or spawn exceptions", async
       () =>
         runDummySdkProof({
           root: process.cwd(),
-          helper: "/DUMMY-helper",
+          helper: process.execPath,
           piRoot: "/DUMMY-pi",
           spawnSyncImpl() {
             return result;
@@ -312,7 +312,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
       () =>
         runDummySdkProof({
           root: process.cwd(),
-          helper: "/DUMMY-helper",
+          helper: process.execPath,
           piRoot: "/DUMMY-pi",
           spawnSyncImpl: stubbedSdkProof(payload),
           expectedSdkDependency: trustedDependency,
@@ -322,7 +322,7 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
   }
   const accepted = runDummySdkProof({
     root: process.cwd(),
-    helper: "/DUMMY-helper",
+    helper: process.execPath,
     piRoot: "/DUMMY-pi",
     spawnSyncImpl: stubbedSdkProof(validBase),
     expectedSdkDependency: trustedDependency,

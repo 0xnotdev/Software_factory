@@ -1,187 +1,72 @@
 import { strict as assert } from "node:assert";
-import { closeSync, constants, openSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertDestructiveCredentialWritesDenied,
   mountLiveCredentialReadOnly,
 } from "../scripts/cp06-credential-isolation.mjs";
+import { withCompiledHelper } from "./fixtures/cp06-compiled-helper.mjs";
 
-test("live credential mount pins one inode behind distinct read-only regular mounts", async () => {
-  const root = await mkdtemp(join(tmpdir(), "factory-cp06-live-mount-test-"));
-  const source = join(root, "auth-source.json");
-  const target = join(root, "agent", "auth.json");
-  const sourceBytes = '{"live":true}\n';
-  await writeFile(source, sourceBytes);
-  const sourceStat = await lstat(source, { bigint: true });
-  const calls = [];
-  let mountId = 40;
-  const mountIds = new Map();
-  const spawnSyncImpl = (command, args) => {
-    calls.push([command, ...args]);
-    if (command === "findmnt") {
-      const path = args.at(-1);
-      if (!mountIds.has(path)) mountIds.set(path, ++mountId);
-      return {
-        status: 0,
-        stdout: JSON.stringify({
-          filesystems: [
-            {
-              id: mountIds.get(path),
-              target: path,
-              "vfs-options": "ro,nosuid,nodev,noexec,relatime",
-            },
-          ],
-        }),
-        stderr: "",
-      };
-    }
-    return { status: 0, stdout: "", stderr: "" };
-  };
-  const lstatImpl = async (path, options) =>
-    String(path).endsWith("/auth.json") ? sourceStat : lstat(path, options);
-  try {
-    const mount = await mountLiveCredentialReadOnly({
-      root,
-      source,
-      target,
-      spawnSyncImpl,
-      lstatImpl,
+function runMountScenario(helperFd, scenario) {
+  const result = spawnSync(
+    "unshare",
+    [
+      "--user",
+      "--map-root-user",
+      "--mount",
+      "--propagation",
+      "private",
+      "--",
+      process.execPath,
+      resolve("test/fixtures/cp06-credential-mount.mjs"),
+      scenario,
+    ],
+    { encoding: "utf8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe", helperFd] },
+  );
+  assert.equal(result.status, 0, `${scenario}: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+test("descriptor-bound credential mount exposes one read-only inode at both paths", async () => {
+  await withCompiledHelper("mount-control", async ({ helperFd }) => {
+    assert.deepEqual(runMountScenario(helperFd, "control"), {
+      scenario: "control",
+      mounted: true,
+      target_bytes: '{"fixture":"DUMMY","token":"DUMMY-NOT-REAL"}',
+      target_write: "EROFS",
+      parent_write: "EROFS",
+      integrity: true,
+      cleanup: "pass",
+      target_after_cleanup: "",
+      marker_unchanged: true,
+      source_unchanged: true,
+      remaining_mounts: 0,
     });
-    try {
-      assert.equal(await readFile(source, "utf8"), sourceBytes);
-      assert.notEqual(mount.mountIds.source, mount.mountIds.target);
-      const mountCallsOnly = calls.filter(([command]) => command === "mount");
-      assert.match(mountCallsOnly[0][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.equal(mountCallsOnly[0][2], mountCallsOnly[0][3]);
-      assert.deepEqual(mountCallsOnly[1].slice(0, 3), [
-        "mount",
-        "-o",
-        "remount,bind,ro,nosuid,nodev,noexec",
-      ]);
-      assert.match(mountCallsOnly[2][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.equal(mountCallsOnly[2][2], mountCallsOnly[2][3]);
-      assert.deepEqual(mountCallsOnly[3].slice(0, 3), [
-        "mount",
-        "-o",
-        "remount,bind,ro,nosuid,nodev,noexec",
-      ]);
-      assert.equal(mount.parentMounts.length, 2);
-      assert.equal(await mount.verifyIntegrity(), true);
-      assert.match(mountCallsOnly[4][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.match(
-        mountCallsOnly[4][3],
-        new RegExp(`^/proc/${process.pid}/fd/\\d+/auth-source\\.json$`),
-      );
-      assert.deepEqual(mountCallsOnly[5].slice(0, 3), [
-        "mount",
-        "-o",
-        "remount,bind,ro,nosuid,nodev,noexec",
-      ]);
-      assert.match(
-        mountCallsOnly[5][3],
-        new RegExp(`^/proc/${process.pid}/fd/\\d+/auth-source\\.json$`),
-      );
-      assert.match(mountCallsOnly[6][2], new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
-      assert.match(mountCallsOnly[6][3], new RegExp(`^/proc/${process.pid}/fd/\\d+/auth\\.json$`));
-      assert.deepEqual(mountCallsOnly[7].slice(0, 3), [
-        "mount",
-        "-o",
-        "remount,bind,ro,nosuid,nodev,noexec",
-      ]);
-      assert.match(mountCallsOnly[7][3], new RegExp(`^/proc/${process.pid}/fd/\\d+/auth\\.json$`));
-    } finally {
-      await mount.cleanup();
-    }
-    for (const [command, path] of calls.slice(-4)) {
-      assert.equal(command, "umount");
-      assert.match(path, new RegExp(`^/proc/${process.pid}/fd/\\d+`));
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });
 
-test("credential mount consumes retained parent descriptors after path substitution", async () => {
-  const root = await mkdtemp(join(tmpdir(), "factory-cp06-retained-mount-test-"));
-  const sourceDir = join(root, "source");
-  const targetDir = join(root, "agent");
-  const maliciousDir = join(root, "malicious");
-  await mkdir(sourceDir);
-  await mkdir(targetDir);
-  await mkdir(maliciousDir);
-  const source = join(sourceDir, "auth.json");
-  const target = join(targetDir, "auth.json");
-  await writeFile(source, "DUMMY original");
-  await writeFile(join(maliciousDir, "auth.json"), "DUMMY malicious");
-  const sourceFd = openSync(
-    sourceDir,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  const targetFd = openSync(
-    targetDir,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  const sourceAnchor = `/proc/${process.pid}/fd/${sourceFd}`;
-  const targetAnchor = `/proc/${process.pid}/fd/${targetFd}`;
-  const sourceStat = await lstat(source, { bigint: true });
-  const calls = [];
-  let mountId = 90;
-  const mountIds = new Map();
-  const spawnSyncImpl = (command, args) => {
-    calls.push([command, ...args]);
-    if (command === "findmnt") {
-      const path = args.at(-1);
-      if (!mountIds.has(path)) mountIds.set(path, ++mountId);
-      return {
-        status: 0,
-        stdout: JSON.stringify({
-          filesystems: [
-            { id: mountIds.get(path), target: path, "vfs-options": "ro,nosuid,nodev,noexec" },
-          ],
-        }),
-        stderr: "",
-      };
+test("leaf or parent substitution between preparation and mount is refused", async () => {
+  await withCompiledHelper("mount-substitution", async ({ helperFd }) => {
+    for (const [scenario, error] of [
+      ["target-leaf-symlink", "CP-06 mount destination identity changed"],
+      ["target-leaf-replaced", "CP-06 mount destination identity changed"],
+      ["source-leaf-symlink", "CP-06 mount destination identity changed"],
+      ["target-parent-replaced", "CP-06 mount destination path identity changed"],
+      ["source-parent-replaced", "CP-06 mount destination path identity changed"],
+    ]) {
+      assert.deepEqual(runMountScenario(helperFd, scenario), {
+        scenario,
+        mounted: false,
+        error: `read-only credential isolation unavailable: ${error}\n`,
+        marker_unchanged: true,
+        source_unchanged: true,
+        remaining_mounts: 0,
+      });
     }
-    return { status: 0, stdout: "", stderr: "" };
-  };
-  const lstatImpl = async (path, options) =>
-    String(path).endsWith("/auth.json") ? sourceStat : lstat(path, options);
-  try {
-    await rename(sourceDir, join(root, "source-moved"));
-    await symlink(maliciousDir, sourceDir);
-    const mount = await mountLiveCredentialReadOnly({
-      root,
-      source,
-      target,
-      sourceParentAnchor: sourceAnchor,
-      targetParentAnchor: targetAnchor,
-      sourceLeaf: "auth.json",
-      targetLeaf: "auth.json",
-      spawnSyncImpl,
-      lstatImpl,
-    });
-    try {
-      const mountCallsOnly = calls.filter(([command]) => command === "mount");
-      assert.match(
-        mountCallsOnly[4][3],
-        new RegExp(`^/proc/${process.pid}/fd/${sourceFd}/auth\\.json$`),
-      );
-      assert.match(
-        mountCallsOnly[6][3],
-        new RegExp(`^/proc/${process.pid}/fd/${targetFd}/auth\\.json$`),
-      );
-      assert.equal(await readFile(join(maliciousDir, "auth.json"), "utf8"), "DUMMY malicious");
-    } finally {
-      await mount.cleanup();
-    }
-  } finally {
-    closeSync(sourceFd);
-    closeSync(targetFd);
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("mount setup failure reports cleanup failure instead of discarding it", async () => {
@@ -191,8 +76,8 @@ test("mount setup failure reports cleanup failure instead of discarding it", asy
   await writeFile(source, "DUMMY");
   let mountCalls = 0;
   const spawnSyncImpl = (command) => {
-    if (command === "mount" && ++mountCalls === 2) {
-      return { status: 32, stdout: "", stderr: "DUMMY remount failure" };
+    if (command === "/DUMMY-helper" && ++mountCalls === 2) {
+      return { status: 65, stdout: "", stderr: "DUMMY bind failure" };
     }
     if (command === "umount") {
       return { status: 32, stdout: "", stderr: "DUMMY cleanup failure" };
@@ -201,7 +86,13 @@ test("mount setup failure reports cleanup failure instead of discarding it", asy
   };
   try {
     await assert.rejects(
-      mountLiveCredentialReadOnly({ root, source, target, spawnSyncImpl }),
+      mountLiveCredentialReadOnly({
+        root,
+        source,
+        target,
+        mountHelper: "/DUMMY-helper",
+        spawnSyncImpl,
+      }),
       AggregateError,
     );
   } finally {

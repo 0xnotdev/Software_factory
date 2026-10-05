@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { closeSync, constants, openSync, realpathSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -23,6 +23,12 @@ import {
 import { namespaceWorkerError } from "../scripts/cp06-auth-security.mjs";
 import { Cp06CleanupError, withCleanup } from "../scripts/cp06-worker-lifecycle.mjs";
 import { createWorkerBlockedStatus } from "../scripts/replay-cp06-worker.mjs";
+import {
+  DUMMY_CLI_SCENARIOS,
+  DUMMY_CLI_SECRET,
+  writeDummyCliShims,
+} from "../scripts/cp06-dummy-cli-shims.mjs";
+import { withCompiledHelper } from "./fixtures/cp06-compiled-helper.mjs";
 
 for (const scenario of [
   "success",
@@ -444,6 +450,115 @@ test("nested audit, mount and fixture cleanup failures retain typed causes", asy
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("supervisor executable serializes compound worker failures as typed causes", async () => {
+  const audit = {
+    stage: "audit",
+    code: "CP06_CHILD_OUTPUT_INVALID",
+    exit_code: 70,
+    description: "isolated child output was invalid",
+  };
+  const childExit = {
+    stage: "child-exit",
+    code: "CP06_CHILD_EXIT_FAILED",
+    exit_code: 1,
+    description: "isolated child exited unsuccessfully",
+  };
+  const cleanup = {
+    stage: "cleanup",
+    code: "CP06_CREDENTIAL_CLEANUP_FAILED",
+    exit_code: null,
+    description: "credential mount cleanup failed",
+  };
+  const compound = (causes) => ({
+    schema_version: 1,
+    stage: "cleanup",
+    code: "CP06_CLEANUP_FAILED",
+    exit_code: 74,
+    description: "credential namespace cleanup failed",
+    causes,
+  });
+  const expected = {
+    "malformed-output-and-cleanup": compound([audit, cleanup]),
+    "semantic-audit-and-cleanup": compound([audit, cleanup]),
+    "child-exit-and-cleanup": compound([childExit, cleanup]),
+    "audit-only": { schema_version: 1, ...audit, causes: [] },
+    "cleanup-only": compound([cleanup]),
+    success: null,
+  };
+  assert.deepEqual(Object.keys(expected).sort(), Object.keys(DUMMY_CLI_SCENARIOS).sort());
+  await withCompiledHelper("cli-compound", async ({ helperFd, binaries }) => {
+    const probeFd = openSync(binaries.syscallProbe, constants.O_RDONLY | constants.O_CLOEXEC);
+    try {
+      for (const [scenario, record] of Object.entries(expected)) {
+        const directory = realpathSync(await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-cli-")));
+        const shims = join(directory, "shims");
+        const source = join(directory, "credential", "DUMMY-source.json");
+        const sourceBytes = '{"DUMMY":"credential fixture only"}';
+        await mkdir(shims);
+        await mkdir(join(directory, "credential"));
+        await writeFile(source, sourceBytes);
+        try {
+          const result = spawnSync(
+            "unshare",
+            [
+              "--user",
+              "--map-root-user",
+              "--mount",
+              "--propagation",
+              "private",
+              "--",
+              process.execPath,
+              resolve("scripts/cp06-namespace-supervisor.mjs"),
+              "worker",
+              source,
+              join(directory, "home", "pi-agent", "auth.json"),
+              "/proc/self/fd/3",
+              "/proc/self/fd/4",
+              join(directory, "DUMMY-input.json"),
+            ],
+            {
+              encoding: "utf8",
+              timeout: 60_000,
+              stdio: ["pipe", "pipe", "pipe", helperFd, probeFd],
+              env: {
+                ...process.env,
+                PATH: writeDummyCliShims({ anchor: shims, path: shims, scenario }),
+              },
+            },
+          );
+          assert.equal(`${result.stdout}${result.stderr}`.includes(DUMMY_CLI_SECRET), false);
+          assert.equal(await readFile(source, "utf8"), sourceBytes);
+          if (record === null) {
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stderr, "");
+            const success = JSON.parse(result.stdout);
+            assert.equal(success.cleanup, "pass");
+            assert.equal(success.source_unchanged, true);
+            assert.equal(success.mount_ids_distinct, true);
+            assert.equal(success.parent_roots_read_only, true);
+            continue;
+          }
+          assert.equal(result.status, record.exit_code, scenario);
+          assert.equal(result.stdout, "");
+          assert.equal(result.stderr, `${JSON.stringify(record)}\n`);
+          const blocked = createWorkerBlockedStatus(
+            namespaceWorkerError(result),
+            "isolated-sdk-worker",
+            "2026-01-01T00:00:00.000Z",
+          );
+          assert.deepEqual(blocked.worker_failure, record);
+          assert.equal(blocked.code, record.code);
+          assert.equal(blocked.cleanup_failed, record.code === "CP06_CLEANUP_FAILED");
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      closeSync(probeFd);
+    }
+  });
 });
 
 test("worker source integrity uses metadata without reading credential bytes", async () => {

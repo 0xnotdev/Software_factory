@@ -260,29 +260,52 @@ export async function runIsolationProbe({
 }
 
 function runNamespace(options) {
-  const args = [
-    "--user",
-    "--map-root-user",
-    "--mount",
-    "--propagation",
-    "private",
-    "--",
-    process.execPath,
-    join(options.root, "scripts/cp06-namespace-supervisor.mjs"),
-    options.mode,
-    resolve(options.source),
-    options.mode === "worker" ? resolve(options.target) : "-",
-    resolve(options.helper),
-    resolve(options.syscallProbe),
-    ...options.childArgs.map((value) => resolve(value)),
-  ];
-  return spawnSync("unshare", args, {
-    cwd: options.root,
-    encoding: "utf8",
-    timeout: options.timeout,
-    maxBuffer: 1024 * 1024,
-    env: options.environment ?? process.env,
-  });
+  return withInheritedExecutables([options.helper, options.syscallProbe], ([helper, probe]) =>
+    spawnSync(
+      "unshare",
+      [
+        "--user",
+        "--map-root-user",
+        "--mount",
+        "--propagation",
+        "private",
+        "--",
+        process.execPath,
+        join(options.root, "scripts/cp06-namespace-supervisor.mjs"),
+        options.mode,
+        resolve(options.source),
+        options.mode === "worker" ? resolve(options.target) : "-",
+        helper.path,
+        probe.path,
+        ...options.childArgs.map((value) => resolve(value)),
+      ],
+      {
+        cwd: options.root,
+        encoding: "utf8",
+        timeout: options.timeout,
+        maxBuffer: 1024 * 1024,
+        env: options.environment ?? process.env,
+        stdio: ["pipe", "pipe", "pipe", helper.fd, probe.fd],
+      },
+    ),
+  );
+}
+
+// A new user namespace cannot open the runner's /proc/<pid>/fd entries, so the
+// retained execution descriptors are inherited as fds 3+ instead of named.
+function withInheritedExecutables(paths, action) {
+  const descriptors = [];
+  try {
+    for (const [index, path] of paths.entries()) {
+      descriptors.push({
+        fd: openSync(resolve(path), constants.O_RDONLY | constants.O_CLOEXEC),
+        path: `/proc/self/fd/${index + 3}`,
+      });
+    }
+    return action(descriptors);
+  } finally {
+    for (const { fd } of descriptors) closeSync(fd);
+  }
 }
 
 function isSupervisorFailure(value, status) {
@@ -447,43 +470,51 @@ function runDummySdkProofIn({
   expectedSdkDependency,
   proofRoot,
 }) {
-  const result = spawnSyncImpl(
-    "unshare",
-    [
-      "--user",
-      "--map-root-user",
-      "--mount",
-      "--propagation",
-      "private",
-      "--",
-      "setpriv",
-      "--no-new-privs",
-      "--bounding-set=-all",
-      "--inh-caps=-all",
-      "--ambient-caps=-all",
-      "--securebits=+noroot,+noroot_locked,+no_setuid_fixup,+no_setuid_fixup_locked",
-      "--",
-      helper,
-      process.execPath,
-      "--experimental-import-meta-resolve",
-      join(root, "scripts/cp06-dummy-sdk-proof.mjs"),
-      piRoot,
-      proofRoot,
-    ],
-    {
-      cwd: root,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        LANG: process.env.LANG ?? "C.UTF-8",
-        PI_OFFLINE: "1",
-        PI_SKIP_VERSION_CHECK: "1",
-        PI_TELEMETRY: "0",
-      },
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
+  let result;
+  try {
+    result = withInheritedExecutables([helper], ([inherited]) =>
+      spawnSyncImpl(
+        "unshare",
+        [
+          "--user",
+          "--map-root-user",
+          "--mount",
+          "--propagation",
+          "private",
+          "--",
+          "setpriv",
+          "--no-new-privs",
+          "--bounding-set=-all",
+          "--inh-caps=-all",
+          "--ambient-caps=-all",
+          "--securebits=+noroot,+noroot_locked,+no_setuid_fixup,+no_setuid_fixup_locked",
+          "--",
+          inherited.path,
+          process.execPath,
+          "--experimental-import-meta-resolve",
+          join(root, "scripts/cp06-dummy-sdk-proof.mjs"),
+          piRoot,
+          proofRoot,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LANG: process.env.LANG ?? "C.UTF-8",
+            PI_OFFLINE: "1",
+            PI_SKIP_VERSION_CHECK: "1",
+            PI_TELEMETRY: "0",
+          },
+          timeout: 120_000,
+          maxBuffer: 1024 * 1024,
+          stdio: ["pipe", "pipe", "pipe", inherited.fd],
+        },
+      ),
+    );
+  } catch {
+    throw unsupported("DUMMY SDK proof failed: CP06_DUMMY_SDK_LAUNCH_FAILED");
+  }
   if (result.error !== undefined || result.status !== 0) {
     const code =
       result.error?.code === "ETIMEDOUT"

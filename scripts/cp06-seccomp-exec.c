@@ -1,11 +1,15 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -55,7 +59,96 @@ static void close_inherited_fds(void) {
   for (int fd = 3; fd < limit; ++fd) close(fd);
 }
 
+/*
+ * Descriptor-bound read-only bind mounts for the private setup namespace. The
+ * source tree comes from a retained descriptor and the destination is an
+ * identity-checked O_PATH descriptor, so no mount input is resolved by name.
+ */
+static void refuse(const char *message) {
+  fprintf(stderr, "%s\n", message);
+  _exit(65);
+}
+
+static int parse_u64(const char *text, uint64_t *value) {
+  char *end = NULL;
+  if (text == NULL || text[0] < '0' || text[0] > '9') return -1;
+  errno = 0;
+  unsigned long long parsed = strtoull(text, &end, 10);
+  if (errno != 0 || end == NULL || *end != '\0') return -1;
+  *value = (uint64_t)parsed;
+  return 0;
+}
+
+static int has_identity(int fd, mode_t type, const char *dev, const char *ino) {
+  struct stat st;
+  uint64_t expected_dev;
+  uint64_t expected_ino;
+  return parse_u64(dev, &expected_dev) == 0 && parse_u64(ino, &expected_ino) == 0 &&
+         fstat(fd, &st) == 0 && (st.st_mode & S_IFMT) == type &&
+         (uint64_t)st.st_dev == expected_dev && (uint64_t)st.st_ino == expected_ino;
+}
+
+static void require_visible(const char *path, mode_t type, const char *dev, const char *ino) {
+  int fd = open(path, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0 || !has_identity(fd, type, dev, ino)) {
+    refuse("CP-06 mount destination path identity changed");
+  }
+  close(fd);
+}
+
+static void attach_read_only(int source_fd, unsigned int recursive, int destination_fd) {
+  int tree = (int)syscall(SYS_open_tree, source_fd, "",
+                          OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | AT_EMPTY_PATH | recursive);
+  if (tree < 0) fail("open_tree");
+  struct mount_attr attributes = {
+      .attr_set = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+  };
+  if (syscall(SYS_mount_setattr, tree, "", AT_EMPTY_PATH | recursive, &attributes,
+              sizeof(attributes)) != 0) {
+    fail("mount_setattr");
+  }
+  if (syscall(SYS_move_mount, tree, "", destination_fd, "",
+              MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH) != 0) {
+    fail("move_mount");
+  }
+  close(tree);
+}
+
+/* fd 3: pinned regular source; fd 4: retained destination parent directory. */
+static int bind_file(int argc, char **argv) {
+  if (argc != 8 || argv[4][0] == '\0' || strchr(argv[4], '/') != NULL ||
+      strcmp(argv[4], ".") == 0 || strcmp(argv[4], "..") == 0) {
+    fprintf(stderr, "usage: cp06-seccomp-exec --cp06-bind-file SRC_DEV SRC_INO LEAF DEV INO PATH\n");
+    return 64;
+  }
+  if (!has_identity(3, S_IFREG, argv[2], argv[3])) refuse("CP-06 mount source identity changed");
+  int destination = openat(4, argv[4], O_PATH | O_NOFOLLOW | O_CLOEXEC);
+  if (destination < 0 || !has_identity(destination, S_IFREG, argv[5], argv[6])) {
+    refuse("CP-06 mount destination identity changed");
+  }
+  require_visible(argv[7], S_IFREG, argv[5], argv[6]);
+  attach_read_only(3, 0, destination);
+  close(destination);
+  return 0;
+}
+
+/* fd 3: retained directory, bound read-only over itself with its submounts. */
+static int bind_tree(int argc, char **argv) {
+  if (argc != 5) {
+    fprintf(stderr, "usage: cp06-seccomp-exec --cp06-bind-tree DEV INO PATH\n");
+    return 64;
+  }
+  if (!has_identity(3, S_IFDIR, argv[2], argv[3])) {
+    refuse("CP-06 mount directory identity changed");
+  }
+  require_visible(argv[4], S_IFDIR, argv[2], argv[3]);
+  attach_read_only(3, AT_RECURSIVE, 3);
+  return 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc >= 2 && strcmp(argv[1], "--cp06-bind-file") == 0) return bind_file(argc, argv);
+  if (argc >= 2 && strcmp(argv[1], "--cp06-bind-tree") == 0) return bind_tree(argc, argv);
   if (argc < 2) {
     fprintf(stderr, "usage: cp06-seccomp-exec COMMAND [ARG...]\n");
     return 64;
