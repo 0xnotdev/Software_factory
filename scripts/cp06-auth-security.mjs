@@ -261,7 +261,10 @@ export async function runIsolationProbe({
 }
 
 function runNamespace(options) {
-  const inputs = options.mode === "worker" ? [options.helper, options.syscallProbe, options.childArgs[0]] : [options.helper, options.syscallProbe];
+  const inputs =
+    options.mode === "worker"
+      ? [options.helper, options.syscallProbe, options.childArgs[0]]
+      : [options.helper, options.syscallProbe];
   return withInheritedExecutables(inputs, ([helper, probe, input]) =>
     spawnSync(
       "unshare",
@@ -301,7 +304,10 @@ function withInheritedExecutables(paths, action) {
   try {
     for (const [index, path] of paths.entries()) {
       descriptors.push({
-        fd: openSync(resolve(path), constants.O_RDONLY | constants.O_CLOEXEC | (index >= 2 ? constants.O_NOFOLLOW : 0)),
+        fd: openSync(
+          resolve(path),
+          constants.O_RDONLY | constants.O_CLOEXEC | (index >= 2 ? constants.O_NOFOLLOW : 0),
+        ),
         path: `/proc/self/fd/${index + 3}`,
       });
     }
@@ -434,12 +440,29 @@ export function assertHardenedProof(proof) {
   const observations = new Map();
   for (const line of syscalls.stdout.split("\n")) {
     const [key, value, extra] = line.split("=");
-    assert(key && value && extra === undefined && !observations.has(key), "syscall observations malformed");
+    assert(
+      key && value && extra === undefined && !observations.has(key),
+      "syscall observations malformed",
+    );
     observations.set(key, value);
   }
   for (const prefix of ["", "inherited_"]) {
-    for (const name of ["setns", "unshare", "clone", "mount", "umount2", "ptrace_attach", "ptrace_seize", "process_vm_readv", "process_vm_writev", "pidfd_getfd"]) {
-      assert(observations.get(`${prefix}${name}`) === "-1:1", "required DUMMY syscall denial missing");
+    for (const name of [
+      "setns",
+      "unshare",
+      "clone",
+      "mount",
+      "umount2",
+      "ptrace_attach",
+      "ptrace_seize",
+      "process_vm_readv",
+      "process_vm_writev",
+      "pidfd_getfd",
+    ]) {
+      assert(
+        observations.get(`${prefix}${name}`) === "-1:1",
+        "required DUMMY syscall denial missing",
+      );
     }
     assert(observations.get(`${prefix}clone3`) === "-1:38", "clone3 denial missing");
     assert(observations.get(`${prefix}pidfd_open`) === "opened", "DUMMY pidfd target unavailable");
@@ -448,7 +471,10 @@ export function assertHardenedProof(proof) {
     assert(observations.get(`${prefix}NoNewPrivs`) === "1", "inherited no_new_privs missing");
     assert(observations.get(`${prefix}Seccomp`) === "2", "inherited seccomp missing");
     for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) {
-      assert(observations.get(`${prefix}${name}`) === "0000000000000000", "inherited capabilities not empty");
+      assert(
+        observations.get(`${prefix}${name}`) === "0000000000000000",
+        "inherited capabilities not empty",
+      );
     }
   }
   assert(observations.get("dummy_target_unchanged") === "true", "DUMMY target integrity missing");
@@ -767,7 +793,8 @@ function validateOutcomeProof(outcomes, trustedDependency, originalPath) {
       "source_unchanged",
       "to_auth",
     ];
-    if (["valid", "fenced-valid"].includes(entry.scenario)) expectedKeys.push("read_audit", "event_count");
+    if (["valid", "fenced-valid"].includes(entry.scenario))
+      expectedKeys.push("read_audit", "event_count");
     assertExactKeys(entry, expectedKeys);
     seen.add(entry.scenario);
     assert(
@@ -830,7 +857,10 @@ export function validateReadAudit(audit, { toolCallId, originalPath, original, e
   ]);
   const isEmptyArray = (value) => Array.isArray(value) && value.length === 0;
   assert(Number.isSafeInteger(eventCount) && eventCount > 0, "read audit event count missing");
-  assert(typeof original === "string" || Buffer.isBuffer(original), "read audit trusted bytes missing");
+  assert(
+    typeof original === "string" || Buffer.isBuffer(original),
+    "read audit trusted bytes missing",
+  );
   const expectedBytes = Buffer.from(original);
   const expectedHash = sha256(expectedBytes);
   const isIndex = (value) => Number.isSafeInteger(value) && value >= 0 && value < eventCount;

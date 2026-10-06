@@ -132,10 +132,16 @@ export function readPinnedRegularFile(path) {
 }
 
 export function openPinnedDirectory(path) {
-  return openWithoutFollowingAncestors(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
+  return openWithoutFollowingAncestors(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+  );
 }
 
-function openWithoutFollowingAncestors(path, leafFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC) {
+function openWithoutFollowingAncestors(
+  path,
+  leafFlags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_CLOEXEC,
+) {
   if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) {
     throw new Error("supplied original path must be absolute and normalized");
   }
@@ -150,10 +156,7 @@ function openWithoutFollowingAncestors(path, leafFlags = constants.O_RDONLY | co
       closeSync(parentFd);
       parentFd = nextFd;
     }
-    return openSync(
-      `/proc/self/fd/${parentFd}/${components.at(-1)}`,
-      leafFlags,
-    );
+    return openSync(`/proc/self/fd/${parentFd}/${components.at(-1)}`, leafFlags);
   } finally {
     closeSync(parentFd);
   }

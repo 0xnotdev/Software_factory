@@ -8,7 +8,12 @@ import { Cp06ReadOnlyCredentialStore } from "./cp06-readonly-credentials.mjs";
 import { auditReadEvents } from "./cp06-worker-audit.mjs";
 import { proveDummyWorkerOutcome } from "./cp06-dummy-outcome-proof.mjs";
 import { importPinnedPiAi } from "./cp06-pi-dependency.mjs";
-import { openAnchoredDirectory, readArtifactFile, writeArtifactFile, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  readArtifactFile,
+  writeArtifactFile,
+  removeAnchoredEntry,
+} from "./cp06-probe-fixture.mjs";
 import { DUMMY_SDK_ORIGINAL } from "./cp06-dummy-originals.mjs";
 import { createGuardedReadTool, openPinnedDirectory } from "./cp06-guarded-read.mjs";
 
@@ -134,112 +139,121 @@ async function authCase(scenario) {
 async function fauxWorkerProof() {
   const workerDirectory = openAnchoredDirectory(proofAnchor, "DUMMY-worker");
   try {
-  const workerRoot = join(proofRoot, "DUMMY-worker");
-  const originalPath = join(workerRoot, "DUMMY-original.md");
-  const authPath = join(workerDirectory.anchor, "DUMMY-auth.json");
-  const original = DUMMY_SDK_ORIGINAL;
-  writeArtifactFile(join(workerDirectory.anchor, "DUMMY-original.md"), original);
-  const guardedRead = createGuardedReadTool({ sdk, root: workerRoot, expectedOriginalPath: originalPath });
-  const faux = ai.fauxProvider({
-    provider: "DUMMY-readonly",
-    models: [{ id: "DUMMY-model" }],
-    tokensPerSecond: 100_000,
-  });
-  const providerId = faux.provider.id;
-  await writeFile(
-    authPath,
-    JSON.stringify({
-      [providerId]: {
-        type: "oauth",
-        access: "DUMMY-ACCESS",
-        refresh: "DUMMY-REFRESH",
-        expires: Date.now() + 600_000,
+    const workerRoot = join(proofRoot, "DUMMY-worker");
+    const originalPath = join(workerRoot, "DUMMY-original.md");
+    const authPath = join(workerDirectory.anchor, "DUMMY-auth.json");
+    const original = DUMMY_SDK_ORIGINAL;
+    writeArtifactFile(join(workerDirectory.anchor, "DUMMY-original.md"), original);
+    const guardedRead = createGuardedReadTool({
+      sdk,
+      root: workerRoot,
+      expectedOriginalPath: originalPath,
+    });
+    const faux = ai.fauxProvider({
+      provider: "DUMMY-readonly",
+      models: [{ id: "DUMMY-model" }],
+      tokensPerSecond: 100_000,
+    });
+    const providerId = faux.provider.id;
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        [providerId]: {
+          type: "oauth",
+          access: "DUMMY-ACCESS",
+          refresh: "DUMMY-REFRESH",
+          expires: Date.now() + 600_000,
+        },
+      }),
+    );
+    const store = await Cp06ReadOnlyCredentialStore.load({ path: authPath, providerId });
+    let refreshCallbacks = 0;
+    faux.provider.auth = {
+      oauth: {
+        async refresh() {
+          refreshCallbacks += 1;
+          throw new Error("DUMMY refresh must not run");
+        },
+        async toAuth() {
+          return { apiKey: "DUMMY-RESOLVED" };
+        },
       },
-    }),
-  );
-  const store = await Cp06ReadOnlyCredentialStore.load({ path: authPath, providerId });
-  let refreshCallbacks = 0;
-  faux.provider.auth = {
-    oauth: {
-      async refresh() {
-        refreshCallbacks += 1;
-        throw new Error("DUMMY refresh must not run");
-      },
-      async toAuth() {
-        return { apiKey: "DUMMY-RESOLVED" };
-      },
-    },
-  };
-  const runtime = await sdk.ModelRuntime.create({
-    credentials: store,
-    modelsPath: null,
-    refreshOnCreate: false,
-    allowModelNetwork: false,
-  });
-  runtime.registerNativeProvider(faux.provider);
-  const model = runtime.getModel(providerId, "DUMMY-model");
-  assert.ok(model);
-  faux.setResponses([
-    ai.fauxAssistantMessage(ai.fauxToolCall("read", { path: originalPath }, { id: "DUMMY-read" }), {
-      stopReason: "toolUse",
-    }),
-    ai.fauxAssistantMessage("DUMMY complete", { stopReason: "stop" }),
-  ]);
-  const resourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: sdk.createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => "Use only read and read the supplied DUMMY original exactly once.",
-    getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
-    getAppendSystemPromptSources: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
-  const { session } = await sdk.createAgentSession({
-    cwd: workerRoot,
-    agentDir: workerRoot,
-    model,
-    modelRuntime: runtime,
-    resourceLoader,
-    tools: ["read"],
-    customTools: [guardedRead.tool],
-    sessionManager: sdk.SessionManager.inMemory(workerRoot),
-    settingsManager: sdk.SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: { enabled: false },
-    }),
-  });
-  const events = [];
-  const unsubscribe = session.subscribe((event) => events.push(structuredClone(event)));
-  try {
-    await session.prompt(`Read ${originalPath} exactly once.`, { expandPromptTemplates: false });
+    };
+    const runtime = await sdk.ModelRuntime.create({
+      credentials: store,
+      modelsPath: null,
+      refreshOnCreate: false,
+      allowModelNetwork: false,
+    });
+    runtime.registerNativeProvider(faux.provider);
+    const model = runtime.getModel(providerId, "DUMMY-model");
+    assert.ok(model);
+    faux.setResponses([
+      ai.fauxAssistantMessage(
+        ai.fauxToolCall("read", { path: originalPath }, { id: "DUMMY-read" }),
+        {
+          stopReason: "toolUse",
+        },
+      ),
+      ai.fauxAssistantMessage("DUMMY complete", { stopReason: "stop" }),
+    ]);
+    const resourceLoader = {
+      getExtensions: () => ({ extensions: [], errors: [], runtime: sdk.createExtensionRuntime() }),
+      getSkills: () => ({ skills: [], diagnostics: [] }),
+      getPrompts: () => ({ prompts: [], diagnostics: [] }),
+      getThemes: () => ({ themes: [], diagnostics: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [] }),
+      getSystemPrompt: () => "Use only read and read the supplied DUMMY original exactly once.",
+      getSystemPromptSource: () => undefined,
+      getAppendSystemPrompt: () => [],
+      getAppendSystemPromptSources: () => [],
+      extendResources: () => {},
+      reload: async () => {},
+    };
+    const { session } = await sdk.createAgentSession({
+      cwd: workerRoot,
+      agentDir: workerRoot,
+      model,
+      modelRuntime: runtime,
+      resourceLoader,
+      tools: ["read"],
+      customTools: [guardedRead.tool],
+      sessionManager: sdk.SessionManager.inMemory(workerRoot),
+      settingsManager: sdk.SettingsManager.inMemory({
+        compaction: { enabled: false },
+        retry: { enabled: false },
+      }),
+    });
+    const events = [];
+    const unsubscribe = session.subscribe((event) => events.push(structuredClone(event)));
+    try {
+      await session.prompt(`Read ${originalPath} exactly once.`, { expandPromptTemplates: false });
+    } finally {
+      unsubscribe();
+      session.dispose();
+    }
+    const audit = auditReadEvents(events, {
+      root: workerRoot,
+      expectedOriginalPath: originalPath,
+      expectedOriginal: original,
+      decisiveText: ["request-supplied owner fields are ignored"],
+    });
+    assert.equal(audit.ok, true);
+    assert.deepEqual(session.getActiveToolNames(), ["read"]);
+    assert.equal(session.sessionFile, undefined);
+    assert.equal(refreshCallbacks, 0);
+    return {
+      active_tools: session.getActiveToolNames(),
+      in_memory_session: session.sessionFile === undefined,
+      event_count: events.length,
+      event_sha256: sha256(JSON.stringify(events)),
+      read_audit: audit.summary,
+      refresh_callbacks: refreshCallbacks,
+      credential_store: store.audit(),
+    };
   } finally {
-    unsubscribe();
-    session.dispose();
+    workerDirectory.close();
   }
-  const audit = auditReadEvents(events, {
-    root: workerRoot,
-    expectedOriginalPath: originalPath,
-    expectedOriginal: original,
-    decisiveText: ["request-supplied owner fields are ignored"],
-  });
-  assert.equal(audit.ok, true);
-  assert.deepEqual(session.getActiveToolNames(), ["read"]);
-  assert.equal(session.sessionFile, undefined);
-  assert.equal(refreshCallbacks, 0);
-  return {
-    active_tools: session.getActiveToolNames(),
-    in_memory_session: session.sessionFile === undefined,
-    event_count: events.length,
-    event_sha256: sha256(JSON.stringify(events)),
-    read_audit: audit.summary,
-    refresh_callbacks: refreshCallbacks,
-    credential_store: store.audit(),
-  };
-  } finally { workerDirectory.close(); }
 }
 
 async function writeFile(path, bytes) {

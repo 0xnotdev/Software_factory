@@ -145,8 +145,14 @@ test("supervisor trusted provenance verifies the selected installation without e
     }).provenance;
     assert.deepEqual(trusted, reported);
     assert.equal(existsSync(join(projectRoot, "DUMMY-home")), false);
-    await writeFile(join(packages, "pi-ai/dist/index.js"), "DUMMY same-version dependency replacement");
-    assert.throws(() => trustedWorkerProvenance({ root: projectRoot, environment }), /pinned artifact/);
+    await writeFile(
+      join(packages, "pi-ai/dist/index.js"),
+      "DUMMY same-version dependency replacement",
+    );
+    assert.throws(
+      () => trustedWorkerProvenance({ root: projectRoot, environment }),
+      /pinned artifact/,
+    );
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

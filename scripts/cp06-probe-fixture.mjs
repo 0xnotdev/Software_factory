@@ -239,9 +239,12 @@ export function readAnchoredFile(parentAnchor, name, { expected } = {}) {
     }
     const bytes = readFileSync(fd);
     const current = fstatSync(fd, { bigint: true });
-    if (!sameInode(pinned, lstatSync(path, { bigint: true })) ||
-        current.size !== pinned.size || current.mtimeNs !== pinned.mtimeNs ||
-        current.ctimeNs !== pinned.ctimeNs) {
+    if (
+      !sameInode(pinned, lstatSync(path, { bigint: true })) ||
+      current.size !== pinned.size ||
+      current.mtimeNs !== pinned.mtimeNs ||
+      current.ctimeNs !== pinned.ctimeNs
+    ) {
       throw new Error("DUMMY proof artifact identity changed");
     }
     return bytes;
@@ -256,7 +259,9 @@ export function withArtifactParent(path, action) {
   const components = match[2].split("/");
   const name = components.pop();
   assertArtifactName(name);
-  const parent = components.length ? openAnchoredDirectory(match[1], components.join("/"), { create: false }) : null;
+  const parent = components.length
+    ? openAnchoredDirectory(match[1], components.join("/"), { create: false })
+    : null;
   try {
     return action(parent?.anchor ?? match[1], name);
   } finally {
@@ -269,7 +274,9 @@ export function writeArtifactFile(path, data, options) {
 }
 
 export function writeArtifactEntry(path, data, options) {
-  return withArtifactParent(path, (anchor, name) => writeAnchoredEntry(anchor, name, data, options));
+  return withArtifactParent(path, (anchor, name) =>
+    writeAnchoredEntry(anchor, name, data, options),
+  );
 }
 
 export function readArtifactFile(path, encoding, options) {

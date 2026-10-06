@@ -509,12 +509,20 @@ test("supervisor executable serializes compound worker failures as typed causes"
         await writeFile(join(directory, "docs/AUTH.md"), DUMMY_OUTCOME_ORIGINAL);
         await writeFile(join(directory, "DUMMY-contract.yaml"), "DUMMY contract");
         await writeFile(join(directory, "DUMMY-pack.md"), "DUMMY pack");
-        await writeFile(join(directory, "DUMMY-input.json"), JSON.stringify({
-          schema_version: 1, root: directory, fixture_root: directory,
-          original_path: join(directory, "docs/AUTH.md"),
-          contract_path: join(directory, "DUMMY-contract.yaml"), pack_path: join(directory, "DUMMY-pack.md"),
-          provider: "openai-codex", model: "DUMMY-model", timeout_ms: 1_000,
-        }));
+        await writeFile(
+          join(directory, "DUMMY-input.json"),
+          JSON.stringify({
+            schema_version: 1,
+            root: directory,
+            fixture_root: directory,
+            original_path: join(directory, "docs/AUTH.md"),
+            contract_path: join(directory, "DUMMY-contract.yaml"),
+            pack_path: join(directory, "DUMMY-pack.md"),
+            provider: "openai-codex",
+            model: "DUMMY-model",
+            timeout_ms: 1_000,
+          }),
+        );
         try {
           const result = spawnSync(
             "unshare",
@@ -595,7 +603,12 @@ test("supervisor executable resolves the selected installation without DUMMY tru
     causes: [],
   };
   const cases = [
-    { name: "installation-missing", scenario: "dummy-provenance-untrusted", install: {}, record: setup },
+    {
+      name: "installation-missing",
+      scenario: "dummy-provenance-untrusted",
+      install: {},
+      record: setup,
+    },
     ...(installed
       ? Object.entries(DUMMY_CLI_INSTALLED_SCENARIOS).map(([scenario, { record }]) => ({
           name: scenario,
@@ -609,7 +622,9 @@ test("supervisor executable resolves the selected installation without DUMMY tru
     const probeFd = openSync(binaries.syscallProbe, constants.O_RDONLY | constants.O_CLOEXEC);
     try {
       for (const { name, scenario, install: selected, record } of cases) {
-        const directory = realpathSync(await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-installed-")));
+        const directory = realpathSync(
+          await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-installed-")),
+        );
         const shims = join(directory, "shims");
         const source = join(directory, "credential", "DUMMY-source.json");
         const sourceBytes = '{"DUMMY":"credential fixture only"}';
@@ -620,12 +635,20 @@ test("supervisor executable resolves the selected installation without DUMMY tru
         await writeFile(join(directory, "docs/AUTH.md"), DUMMY_OUTCOME_ORIGINAL);
         await writeFile(join(directory, "DUMMY-contract.yaml"), "DUMMY contract");
         await writeFile(join(directory, "DUMMY-pack.md"), "DUMMY pack");
-        await writeFile(join(directory, "DUMMY-input.json"), JSON.stringify({
-          schema_version: 1, root: directory, fixture_root: directory,
-          original_path: join(directory, "docs/AUTH.md"),
-          contract_path: join(directory, "DUMMY-contract.yaml"), pack_path: join(directory, "DUMMY-pack.md"),
-          provider: "openai-codex", model: "DUMMY-model", timeout_ms: 1_000,
-        }));
+        await writeFile(
+          join(directory, "DUMMY-input.json"),
+          JSON.stringify({
+            schema_version: 1,
+            root: directory,
+            fixture_root: directory,
+            original_path: join(directory, "docs/AUTH.md"),
+            contract_path: join(directory, "DUMMY-contract.yaml"),
+            pack_path: join(directory, "DUMMY-pack.md"),
+            provider: "openai-codex",
+            model: "DUMMY-model",
+            timeout_ms: 1_000,
+          }),
+        );
         const environment = { ...process.env, ...selected, HOME: directory };
         delete environment.CP06_DUMMY_TRUSTED_PROVENANCE;
         if (selected.CP06_PI_PACKAGE_ROOT === undefined) {

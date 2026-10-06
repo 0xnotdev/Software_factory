@@ -5,7 +5,14 @@ import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openAnchoredDirectory, openProbeOutput, writeArtifactEntry, readArtifactFile, withArtifactParent, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  openProbeOutput,
+  writeArtifactEntry,
+  readArtifactFile,
+  withArtifactParent,
+  removeAnchoredEntry,
+} from "./cp06-probe-fixture.mjs";
 import { readPinnedRegularFile } from "./cp06-guarded-read.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -708,7 +715,10 @@ function requireRead(path) {
 }
 
 function requireWrite(path, value, options) {
-  const written = writeArtifactEntry(path, value, { ...options, expected: preparedArtifacts.get(path) });
+  const written = writeArtifactEntry(path, value, {
+    ...options,
+    expected: preparedArtifacts.get(path),
+  });
   preparedArtifacts.set(path, written.identity);
   return written.sha256;
 }
@@ -719,7 +729,9 @@ async function readFile(path, encoding) {
 }
 
 async function writeFile(path, value) {
-  return requireWrite(path, value, { replace: path === join(fixtureRoot, ".factory/tasks/AUTH-001.yaml") });
+  return requireWrite(path, value, {
+    replace: path === join(fixtureRoot, ".factory/tasks/AUTH-001.yaml"),
+  });
 }
 
 async function rm(path) {
@@ -731,10 +743,16 @@ function copyFixtureTree(source, destination, logical = destination) {
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       const child = openAnchoredDirectory(destination, entry.name);
-      try { copyFixtureTree(join(source, entry.name), child.anchor, join(logical, entry.name)); }
-      finally { child.close(); }
+      try {
+        copyFixtureTree(join(source, entry.name), child.anchor, join(logical, entry.name));
+      } finally {
+        child.close();
+      }
     } else if (entry.isFile()) {
-      const written = writeArtifactEntry(join(destination, entry.name), readPinnedRegularFile(join(source, entry.name)).bytes);
+      const written = writeArtifactEntry(
+        join(destination, entry.name),
+        readPinnedRegularFile(join(source, entry.name)).bytes,
+      );
       preparedArtifacts.set(join(logical, entry.name), written.identity);
     } else throw new Error("DUMMY fixture contains a nonregular entry");
   }

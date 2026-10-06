@@ -126,6 +126,12 @@ sdk.ModelRuntime.create = async function (options) {
 };
 process.on("exit", (exit) => {
   try {
-    writeAnchoredFile(`/proc/${process.pid}/fd/${countersFd}`, basename(countersPath), JSON.stringify({ ...counts, exit }));
-  } finally { closeSync(countersFd); }
+    writeAnchoredFile(
+      `/proc/${process.pid}/fd/${countersFd}`,
+      basename(countersPath),
+      JSON.stringify({ ...counts, exit }),
+    );
+  } finally {
+    closeSync(countersFd);
+  }
 });

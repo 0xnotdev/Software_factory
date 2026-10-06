@@ -110,7 +110,8 @@ try {
         ? "no-follow-refused"
         : error.message;
 }
-if (scenario.endsWith("-ancestor-symlink")) result.external_entries = (await readdir(external)).sort();
+if (scenario.endsWith("-ancestor-symlink"))
+  result.external_entries = (await readdir(external)).sort();
 markerReads.push(await readFile(externalLeaf, "utf8"));
 result.marker_unchanged = markerReads.every((value) => value === marker);
 const originalSource =

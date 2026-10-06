@@ -131,20 +131,27 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           });
           let result;
           try {
-            const launch = (stdio) => spawn(command.command, command.args, {
-              cwd: probe?.cwd ?? root,
-              encoding: "utf8",
-              env: childEnvironment(mode, source, target),
-              timeout: mode === "worker" ? 600_000 : 60_000,
-              maxBuffer: 1024 * 1024,
-              stdio,
-            });
+            const launch = (stdio) =>
+              spawn(command.command, command.args, {
+                cwd: probe?.cwd ?? root,
+                encoding: "utf8",
+                env: childEnvironment(mode, source, target),
+                timeout: mode === "worker" ? 600_000 : 60_000,
+                maxBuffer: 1024 * 1024,
+                stdio,
+              });
             if (dependencies.spawn) result = launch(undefined);
             else {
-              const paths = mode === "unsafe-probe" ? [syscallProbe] : mode === "hardened-probe" ? [helper, syscallProbe] : [helper, childArgs[0]];
+              const paths =
+                mode === "unsafe-probe"
+                  ? [syscallProbe]
+                  : mode === "hardened-probe"
+                    ? [helper, syscallProbe]
+                    : [helper, childArgs[0]];
               const fds = [];
               try {
-                for (const path of paths) fds.push(openSync(path, constants.O_RDONLY | constants.O_CLOEXEC));
+                for (const path of paths)
+                  fds.push(openSync(path, constants.O_RDONLY | constants.O_CLOEXEC));
                 result = launch(["pipe", "pipe", "pipe", ...fds]);
               } finally {
                 for (const fd of fds) closeSync(fd);
@@ -463,7 +470,18 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     console.log(
       JSON.stringify(
-        await superviseCredentialChild({ mode, source, target, helper, syscallProbe, childArgs: childArgs.map((path) => /^\/proc\/self\/fd\/\d+$/u.test(path) ? `/proc/${process.pid}/fd/${path.slice("/proc/self/fd/".length)}` : path) }),
+        await superviseCredentialChild({
+          mode,
+          source,
+          target,
+          helper,
+          syscallProbe,
+          childArgs: childArgs.map((path) =>
+            /^\/proc\/self\/fd\/\d+$/u.test(path)
+              ? `/proc/${process.pid}/fd/${path.slice("/proc/self/fd/".length)}`
+              : path,
+          ),
+        }),
       ),
     );
   } catch (error) {

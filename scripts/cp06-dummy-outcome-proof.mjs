@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withCleanup } from "./cp06-worker-lifecycle.mjs";
-import { openAnchoredDirectory, readArtifactFile, writeArtifactFile, removeAnchoredEntry } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  readArtifactFile,
+  writeArtifactFile,
+  removeAnchoredEntry,
+} from "./cp06-probe-fixture.mjs";
 import { DUMMY_OUTCOME_ORIGINAL } from "./cp06-dummy-originals.mjs";
 import { openPinnedDirectory } from "./cp06-guarded-read.mjs";
 
@@ -21,11 +26,15 @@ export async function proveDummyWorkerOutcome({ piRoot, directory: requested, pa
     prepared = openAnchoredDirectory(parentAnchor, "DUMMY-outcome");
     directory = requested;
   }
-  const fd = prepared ? openSync(prepared.anchor, constants.O_RDONLY | constants.O_DIRECTORY) : openPinnedDirectory(directory);
+  const fd = prepared
+    ? openSync(prepared.anchor, constants.O_RDONLY | constants.O_DIRECTORY)
+    : openPinnedDirectory(directory);
   prepared?.close();
   const anchor = `/proc/${process.pid}/fd/${fd}`;
   const identity = fstatSync(fd, { bigint: true });
-  const parentFd = parentAnchor ? openSync(parentAnchor, constants.O_RDONLY | constants.O_DIRECTORY) : openPinnedDirectory(dirname(directory));
+  const parentFd = parentAnchor
+    ? openSync(parentAnchor, constants.O_RDONLY | constants.O_DIRECTORY)
+    : openPinnedDirectory(dirname(directory));
   const retainedParent = `/proc/${process.pid}/fd/${parentFd}`;
   const anchored = (path) => {
     if (!path.startsWith(`${directory}/`)) throw new Error("DUMMY artifact escaped fixture");
@@ -37,10 +46,7 @@ export async function proveDummyWorkerOutcome({ piRoot, directory: requested, pa
     async () => {
       openAnchoredDirectory(anchor, "docs").close();
       const originalPath = join(directory, "docs/AUTH.md");
-      await writeFile(
-        originalPath,
-        DUMMY_OUTCOME_ORIGINAL,
-      );
+      await writeFile(originalPath, DUMMY_OUTCOME_ORIGINAL);
       const credentialAlias = join(directory, "DUMMY-credential-alias.json");
       const contractPath = join(directory, "DUMMY-contract.yaml");
       const packPath = join(directory, "DUMMY-pack.md");
@@ -183,7 +189,12 @@ export async function proveDummyWorkerOutcome({ piRoot, directory: requested, pa
           expected_exit_code: expectedExit,
           ...counts,
           source_unchanged: true,
-          ...(output ? { read_audit: output.event_stream.read_audit, event_count: output.event_stream.event_count } : {}),
+          ...(output
+            ? {
+                read_audit: output.event_stream.read_audit,
+                event_count: output.event_stream.event_count,
+              }
+            : {}),
         });
       }
       return { fixture_origin: true, semantic_acceptance: false, cases };
@@ -192,9 +203,13 @@ export async function proveDummyWorkerOutcome({ piRoot, directory: requested, pa
       try {
         for (const name of readdirSync(anchor)) removeAnchoredEntry(anchor, name);
         const visible = lstatSync(join(retainedParent, basename(directory)), { bigint: true });
-        if (!visible.isDirectory() || visible.dev !== identity.dev || visible.ino !== identity.ino) throw new Error("DUMMY outcome directory identity changed");
+        if (!visible.isDirectory() || visible.dev !== identity.dev || visible.ino !== identity.ino)
+          throw new Error("DUMMY outcome directory identity changed");
         removeAnchoredEntry(retainedParent, basename(directory));
-      } finally { closeSync(fd); closeSync(parentFd); }
+      } finally {
+        closeSync(fd);
+        closeSync(parentFd);
+      }
     },
   );
 }

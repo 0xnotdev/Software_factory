@@ -159,11 +159,15 @@ test("DUMMY SDK proof outer cleanup removes child leftovers only through the ret
             mkdirSync(join(proofRoot, "DUMMY-worker", "nested"), { recursive: true });
             writeFileSync(join(proofRoot, "DUMMY-worker", "nested", "DUMMY-partial"), "DUMMY");
             symlinkSync(external, join(proofRoot, "DUMMY-worker", "DUMMY-escape"));
-            return { status: null, error: Object.assign(new Error("DUMMY"), { code: "ETIMEDOUT" }) };
+            return {
+              status: null,
+              error: Object.assign(new Error("DUMMY"), { code: "ETIMEDOUT" }),
+            };
           },
         }),
       (error) =>
-        error.code === "CP06_ISOLATION_UNSUPPORTED" && /CP06_DUMMY_SDK_TIMEOUT/u.test(error.message),
+        error.code === "CP06_ISOLATION_UNSUPPORTED" &&
+        /CP06_DUMMY_SDK_TIMEOUT/u.test(error.message),
     );
     await assert.rejects(readdir(leftovers[0]), { code: "ENOENT" });
     assert.equal(await readFile(sentinel, "utf8"), "DUMMY SENTINEL UNCHANGED");
@@ -245,9 +249,46 @@ test("DUMMY SDK proof consumer rejects incomplete and extra payloads", () => {
   for (const payload of [
     { ...validBase, auth_cases: [] },
     { ...validBase, sdk_worker: { ...validBase.sdk_worker, event_count: 2 } },
-    { ...validBase, sdk_worker: { ...validBase.sdk_worker, read_audit: { ...validBase.sdk_worker.read_audit, expected_sha256: "a".repeat(64), returned_sha256: "a".repeat(64), returned_bytes: 1 } } },
-    { ...validBase, actual_sdk_outcomes: { ...validBase.actual_sdk_outcomes, cases: validBase.actual_sdk_outcomes.cases.map((entry) => entry.scenario === "valid" ? { ...entry, event_count: 2 } : entry) } },
-    { ...validBase, actual_sdk_outcomes: { ...validBase.actual_sdk_outcomes, cases: validBase.actual_sdk_outcomes.cases.map((entry) => entry.scenario === "valid" ? { ...entry, read_audit: { ...entry.read_audit, expected_sha256: "a".repeat(64), returned_sha256: "a".repeat(64), returned_bytes: 1 } } : entry) } },
+    {
+      ...validBase,
+      sdk_worker: {
+        ...validBase.sdk_worker,
+        read_audit: {
+          ...validBase.sdk_worker.read_audit,
+          expected_sha256: "a".repeat(64),
+          returned_sha256: "a".repeat(64),
+          returned_bytes: 1,
+        },
+      },
+    },
+    {
+      ...validBase,
+      actual_sdk_outcomes: {
+        ...validBase.actual_sdk_outcomes,
+        cases: validBase.actual_sdk_outcomes.cases.map((entry) =>
+          entry.scenario === "valid" ? { ...entry, event_count: 2 } : entry,
+        ),
+      },
+    },
+    {
+      ...validBase,
+      actual_sdk_outcomes: {
+        ...validBase.actual_sdk_outcomes,
+        cases: validBase.actual_sdk_outcomes.cases.map((entry) =>
+          entry.scenario === "valid"
+            ? {
+                ...entry,
+                read_audit: {
+                  ...entry.read_audit,
+                  expected_sha256: "a".repeat(64),
+                  returned_sha256: "a".repeat(64),
+                  returned_bytes: 1,
+                },
+              }
+            : entry,
+        ),
+      },
+    },
     { ...validBase, auth_cases: [...validBase.auth_cases, authCase("expired", "blocked", 0)] },
     { ...validBase, extra: "DUMMY-SECRET" },
     { ...validBase, sdk_dependency: { ...validBase.sdk_dependency, version: "0.99.2" } },
@@ -477,9 +518,15 @@ function readAudit(toolCallId, originalPath) {
     other_tool_completions: [],
     completed_successfully: true,
     exact_original: true,
-    expected_sha256: createHash("sha256").update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL).digest("hex"),
-    returned_sha256: createHash("sha256").update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL).digest("hex"),
-    returned_bytes: Buffer.byteLength(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL),
+    expected_sha256: createHash("sha256")
+      .update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL)
+      .digest("hex"),
+    returned_sha256: createHash("sha256")
+      .update(toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL)
+      .digest("hex"),
+    returned_bytes: Buffer.byteLength(
+      toolCallId === "DUMMY-read" ? DUMMY_SDK_ORIGINAL : DUMMY_OUTCOME_ORIGINAL,
+    ),
     tool_call_id: toolCallId,
     start_event_index: 12,
     end_event_index: 13,

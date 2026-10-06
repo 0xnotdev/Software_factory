@@ -5,7 +5,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { openAnchoredDirectory, openProbeOutput, writeArtifactFile, readArtifactFile } from "./cp06-probe-fixture.mjs";
+import {
+  openAnchoredDirectory,
+  openProbeOutput,
+  writeArtifactFile,
+  readArtifactFile,
+} from "./cp06-probe-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputRoot = resolve(root, process.env.CP06_OUTPUT ?? ".factory/state/cp06-correction");
@@ -136,6 +141,8 @@ function sha256(text) {
 
 async function fileHash(path) {
   return createHash("sha256")
-    .update(path.startsWith(`/proc/${process.pid}/fd/`) ? readArtifactFile(path) : await readFile(path))
+    .update(
+      path.startsWith(`/proc/${process.pid}/fd/`) ? readArtifactFile(path) : await readFile(path),
+    )
     .digest("hex");
 }
