@@ -149,6 +149,12 @@ async function fauxWorkerProof() {
       root: workerRoot,
       expectedOriginalPath: originalPath,
     });
+    for (const range of [{ offset: 1, limit: 2_000 }, { offset: 1 }, { limit: 2_000 }]) {
+      await assert.rejects(
+        guardedRead.tool.execute("DUMMY-ranged-read", { path: originalPath, ...range }),
+        /without offset or limit/,
+      );
+    }
     const faux = ai.fauxProvider({
       provider: "DUMMY-readonly",
       models: [{ id: "DUMMY-model" }],

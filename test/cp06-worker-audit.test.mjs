@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+  AUDIT_REJECTION_REASONS,
   assistantResponseText,
   auditReadEvents,
   isExpectedOriginalReference,
@@ -182,19 +183,26 @@ test("worker missing-source identity accepts only the canonical original path", 
   );
 });
 
-for (const [name, acceptedStart] of [
-  ["without an explicit range", start],
-  [
-    "with the SDK first-line range when it returns the complete original",
-    { ...start, args: { path: originalPath, offset: 1, limit: 2_000 } },
-  ],
+test("worker read audit accepts one completed exact-original read without offset or limit", () => {
+  const audit = auditReadEvents([start, successfulEnd(), finalMessage], options);
+  assert.equal(audit.ok, true);
+  assert.equal(audit.summary.completed_successfully, true);
+  assert.equal(audit.summary.exact_original, true);
+  assert.equal(audit.summary.expected_sha256, audit.summary.returned_sha256);
+});
+
+for (const [name, args] of [
+  ["the SDK first-line range", { offset: 1, limit: 2_000 }],
+  ["an explicit offset", { offset: 1 }],
+  ["an explicit limit", { limit: Number.MAX_SAFE_INTEGER }],
 ]) {
-  test(`worker read audit accepts one completed exact-original read ${name}`, () => {
-    const audit = auditReadEvents([acceptedStart, successfulEnd(), finalMessage], options);
-    assert.equal(audit.ok, true);
-    assert.equal(audit.summary.completed_successfully, true);
-    assert.equal(audit.summary.exact_original, true);
-    assert.equal(audit.summary.expected_sha256, audit.summary.returned_sha256);
+  test(`worker read audit rejects ${name} even when it returns the complete original`, () => {
+    const audit = auditReadEvents(
+      [{ ...start, args: { path: originalPath, ...args } }, successfulEnd(), finalMessage],
+      options,
+    );
+    assert.equal(audit.ok, false);
+    assert.equal(audit.reason, AUDIT_REJECTION_REASONS.range);
   });
 }
 

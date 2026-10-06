@@ -47,21 +47,25 @@ test("guarded read denies noncanonical and unauthorized paths before tool access
       { path: original, offset: 2, limit: 20 },
       { path: original, offset: 1, limit: 0 },
       { path: original, offset: 1, limit: 1 },
+      { path: original, offset: 1, limit: 20 },
+      { path: original, offset: 1, limit: 2_000 },
+      { path: original, offset: 0 },
+      { path: original, limit: Number.MAX_SAFE_INTEGER },
+      { path: original, offset: undefined },
       { path: original, extra: true },
     ]) {
       await assert.rejects(tool.execute("DUMMY-read", args));
     }
     assert.equal(accesses, 0);
     const complete = await tool.execute("DUMMY-read", { path: original });
-    await tool.execute("DUMMY-read", { path: original, offset: 1, limit: 20 });
     assert.equal(complete.content[0].text, "DUMMY exact\noriginal");
-    assert.deepEqual(exported, ["DUMMY exact\noriginal", "DUMMY exact\noriginal"]);
-    assert.equal(accesses, 2);
+    assert.deepEqual(exported, ["DUMMY exact\noriginal"]);
+    assert.equal(accesses, 1);
 
     await unlink(original);
     await symlink(credential, original);
     await assert.rejects(tool.execute("DUMMY-raced-read", { path: original }));
-    assert.equal(accesses, 2);
+    assert.equal(accesses, 1);
     assert.equal(exported.includes("DUMMY secret canary"), false);
   } finally {
     await rm(root, { recursive: true, force: true });

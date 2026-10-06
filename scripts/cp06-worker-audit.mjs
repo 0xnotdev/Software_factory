@@ -9,7 +9,7 @@ export const AUDIT_REJECTION_REASONS = Object.freeze({
   unexpectedTools: "unexpected tool events",
   readCount: "expected exactly one read of the supplied original",
   missingCallId: "original read start omitted toolCallId",
-  range: "original read used a range other than offset 1 with an explicit limit",
+  range: "original read used offset or limit",
   matchingCompletion: "expected one matching read completion",
   duplicateCompletion: "read event stream contains an unmatched or duplicate completion",
   completionOrder: "read completion did not occur after its matching start",
@@ -84,10 +84,12 @@ export function auditReadEvents(events, options) {
   if (typeof callId !== "string" || callId.length === 0) {
     return reject(AUDIT_REJECTION_REASONS.missingCallId);
   }
-  const offset = start.event.args?.offset;
-  const limit = start.event.args?.limit;
-  const usesExplicitRange = offset !== undefined || limit !== undefined;
-  if (usesExplicitRange && (offset !== 1 || !Number.isSafeInteger(limit) || limit < 1)) {
+  const args = start.event.args;
+  if (
+    args !== null &&
+    typeof args === "object" &&
+    (Object.hasOwn(args, "offset") || Object.hasOwn(args, "limit"))
+  ) {
     return reject(AUDIT_REJECTION_REASONS.range);
   }
 

@@ -58,7 +58,7 @@ export function createGuardedReadTool({ sdk, root, expectedOriginalPath }) {
     tool: {
       ...read,
       async execute(toolCallId, args, ...rest) {
-        assertAllowedRead(args, canonicalOriginal, pinned.lineCount);
+        assertAllowedRead(args, canonicalOriginal);
         let current;
         try {
           current = lstatSync(canonicalOriginal, { bigint: true });
@@ -74,7 +74,7 @@ export function createGuardedReadTool({ sdk, root, expectedOriginalPath }) {
   };
 }
 
-export function assertAllowedRead(args, expectedOriginalPath, completeLineLimit = 1) {
+export function assertAllowedRead(args, expectedOriginalPath) {
   if (
     args === null ||
     typeof args !== "object" ||
@@ -84,14 +84,8 @@ export function assertAllowedRead(args, expectedOriginalPath, completeLineLimit 
   ) {
     throw new Error("read denied: only the canonical supplied original is allowed");
   }
-  const hasOffset = Object.hasOwn(args, "offset");
-  const hasLimit = Object.hasOwn(args, "limit");
-  if (hasOffset !== hasLimit) throw new Error("read denied: incomplete explicit range");
-  if (
-    hasOffset &&
-    (args.offset !== 1 || !Number.isSafeInteger(args.limit) || args.limit < completeLineLimit)
-  ) {
-    throw new Error("read denied: explicit range must cover the complete original");
+  if (Object.hasOwn(args, "offset") || Object.hasOwn(args, "limit")) {
+    throw new Error("read denied: the original must be read without offset or limit");
   }
 }
 
