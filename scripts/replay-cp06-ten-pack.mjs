@@ -26,8 +26,6 @@ const fixtureDirectory = openAnchoredDirectory(proofRoot, "repo");
 const fixtureRoot = fixtureDirectory.anchor;
 const rawRoot = rawDirectory.anchor;
 const cli = join(root, "dist/src/cli.js");
-const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
-configureOfflineCtxModelDir();
 const reviewer = process.env.CP06_REVIEWER ?? "Pi CP-06 correction worker";
 const commands = [];
 const preparedArtifacts = new Map();
@@ -51,6 +49,9 @@ run("git-add", "git", ["add", "."], { cwd: fixtureRoot });
 run("git-commit", "git", ["commit", "-qm", "seed CP-06 ten-pack fixture"], {
   cwd: fixtureRoot,
 });
+// Resolve CTX only when first needed so artifact-boundary refusals do not depend on it.
+const ctx = resolveTool(process.env.CTX_BIN ?? "ctx");
+configureOfflineCtxModelDir();
 run("ctx-init", ctx, ["init", fixtureRoot, "--json"], { cwd: fixtureRoot });
 
 const globalSources = ["PROJECT.md", "ARCHITECTURE.md"];
