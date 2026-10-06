@@ -237,38 +237,33 @@ function parseFullTask(output: string, expectedId: string): PublishedTask {
     const match = /^  ([a-z_]+):\s?(.*)$/.exec(line);
     if (match?.[1] !== undefined) fields.set(match[1], match[2] ?? "");
   }
-  const id = requiredField(fields, "id", expectedId);
-  let body: string;
-  const bodyField = requiredField(fields, "body", expectedId);
-  try {
-    body = bodyField.startsWith('"') ? (JSON.parse(bodyField) as string) : bodyField;
-  } catch (error) {
-    throw new TasksAxiError("TASKS_AXI_OUTPUT_INVALID", "tasks-axi show returned an invalid body", {
-      id: expectedId,
-      cause: error instanceof Error ? error.message : String(error),
-      output: trimOutput(output),
-    });
-  }
-  if (id !== expectedId || typeof body !== "string") {
+  const id = requiredField(fields, "id", expectedId, output);
+  const body = requiredField(fields, "body", expectedId, output);
+  if (id !== expectedId) {
     throw new TasksAxiError("TASKS_AXI_OUTPUT_INVALID", "tasks-axi show returned the wrong task", {
       expected_id: expectedId,
       actual_id: id,
     });
   }
-  const blocked = requiredField(fields, "blocked_by", expectedId);
+  const blocked = requiredField(fields, "blocked_by", expectedId, output);
   return {
     id,
-    title: requiredField(fields, "title", expectedId),
-    state: requiredField(fields, "state", expectedId),
-    kind: requiredField(fields, "kind", expectedId),
-    repo: requiredField(fields, "repo", expectedId),
+    title: requiredField(fields, "title", expectedId, output),
+    state: requiredField(fields, "state", expectedId, output),
+    kind: requiredField(fields, "kind", expectedId, output),
+    repo: requiredField(fields, "repo", expectedId, output),
     blocked_by: blocked === "none" ? [] : blocked.split(/,\s*/).filter(Boolean),
-    held: requiredField(fields, "held", expectedId) === "yes",
+    held: requiredField(fields, "held", expectedId, output) === "yes",
     body,
   };
 }
 
-function requiredField(fields: Map<string, string>, field: string, id: string): string {
+function requiredField(
+  fields: Map<string, string>,
+  field: string,
+  id: string,
+  output: string,
+): string {
   const value = fields.get(field);
   if (value === undefined) {
     throw new TasksAxiError("TASKS_AXI_OUTPUT_INVALID", "tasks-axi show omitted a required field", {
@@ -276,7 +271,31 @@ function requiredField(fields: Map<string, string>, field: string, id: string): 
       field,
     });
   }
-  return value;
+  if (!value.startsWith('"')) return value;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (typeof decoded === "string") return decoded;
+  } catch (error) {
+    throw new TasksAxiError(
+      "TASKS_AXI_OUTPUT_INVALID",
+      "tasks-axi show returned an invalid field",
+      {
+        id,
+        field,
+        cause: error instanceof Error ? error.message : String(error),
+        output: trimOutput(output),
+      },
+    );
+  }
+  throw new TasksAxiError(
+    "TASKS_AXI_OUTPUT_INVALID",
+    "tasks-axi show returned a non-string field",
+    {
+      id,
+      field,
+      output: trimOutput(output),
+    },
+  );
 }
 
 function taskIdOccurrences(backlog: string, id: string): number {
