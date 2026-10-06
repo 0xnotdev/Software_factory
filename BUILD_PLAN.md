@@ -89,7 +89,9 @@
 
 - [x] Create tests/fixtures for critical auth isolation and normal API behavior, plus one simulated reviewer finding that causes repair and retest.
 - [x] Run an actual worker task with only task/pack/evidence sources in a fresh context; inspect whether it needs missing docs.
-- [ ] **Gate:** P-06 and P-07 via the tracked replays in [docs/probes/CP-06.md](docs/probes/CP-06.md), which owns proof interpretation and residual limits; exact-final-head proofs and independent review remain required. No change to Firstmate routing or shipping config by Factory.
+- [x] **Gate:** P-06 and P-07 via the tracked replays in [docs/probes/CP-06.md](docs/probes/CP-06.md), which owns proof interpretation and residual limits; exact-final-head proofs and independent review remain required. No change to Firstmate routing or shipping config by Factory.
+
+CP-06 was independently accepted at `604744e3d09fd11a1eac6a4c80ffab18d6cc64d0` and landed through PR13 as `c2416731991593bea90a6bec2a98b7257fe9aeb1` on 2026-10-06. The confirmed Firstmate landing receipt and exact-head independent audit reconcile the prior unchecked gate; [CP-06 probe interpretation](docs/probes/CP-06.md) and its Linux/strict-agent/null-normalization limitations remain binding. This is not V1 completion or certification of later checkpoints.
 
 ## CP-07 — Thin Pi command and status convenience
 
@@ -97,8 +99,10 @@
 
 **Implementation files:** `extensions/factory.ts`, package manifest, extension smoke tests. The extension must not hold task state or spawn workers.
 
-- [ ] Verify command parsing and errors in the installed Pi version.
-- [ ] Reload and smoke test package. **Gate:** feature parity with the CLI and no new background process.
+- [x] Verify command parsing and errors in the installed Pi version.
+- [x] Reload and smoke test package. **Gate:** feature parity with the CLI and no new background process.
+
+The development proof and exact-head final validation procedure are owned by [docs/probes/CP-07.md](docs/probes/CP-07.md). Checked implementation steps do not substitute for final-head no-mistakes/CI and independent acceptance.
 
 ## CP-08 — End-to-end greenfield acceptance
 

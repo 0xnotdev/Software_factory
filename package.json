@@ -6,24 +6,38 @@
   "bin": {
     "factory": "./dist/src/cli.js"
   },
+  "pi": {
+    "extensions": [
+      "./extensions/factory.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --experimental-import-meta-resolve --test \"dist/test/**/*.test.js\" \"test/**/*.test.mjs\"",
-    "format": "prettier --write \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
-    "format:check": "prettier --check \"{src,test,scripts,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
+    "format": "prettier --write \"{src,test,scripts,extensions,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
+    "format:check": "prettier --check \"{src,test,scripts,extensions,.github,schemas}/**/*.{ts,js,mjs,yml,yaml,json}\" \"*.json\" \"docs/probes/*.md\" \"docs/superpowers/plans/*.md\"",
     "lint": "node scripts/lint.mjs",
     "proof:cp06:ten-pack": "npm run build && node scripts/replay-cp06-ten-pack.mjs",
     "proof:cp06:p07": "node scripts/replay-cp06-p07.mjs",
     "proof:cp06:auth-security": "node --experimental-import-meta-resolve scripts/prove-cp06-auth-security.mjs",
     "proof:cp06:worker": "node --experimental-import-meta-resolve scripts/replay-cp06-worker.mjs",
     "proof:cp06:worker-cleanup": "node scripts/prove-cp06-worker-cleanup.mjs",
+    "proof:cp07:pi": "npm run build && node scripts/cp07-pi-smoke.mjs",
+    "proof:cp07:reload": "python3 scripts/cp07-pi-reload.py",
     "factory": "node dist/src/cli.js"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.99.2",
     "@types/node": "26.6.3",
     "prettier": "3.9.9",
     "typescript": "7.0.2"
