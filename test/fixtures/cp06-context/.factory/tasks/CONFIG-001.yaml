@@ -1,0 +1,16 @@
+schema_version: 1
+id: CONFIG-001
+title: Enforce configuration precedence
+outcome: Explicit options override project values and defaults.
+depends_on: []
+complexity: bounded
+risk: bounded
+acceptance:
+  - { id: A-CONFIG, statement: Unknown keys fail and precedence is deterministic. }
+advances: [C-CONFIG]
+context:
+  topics: [configuration, precedence, unknown keys]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/CONFIG.md]
+evidence:
+  required: [unit]
+delivery: project-default

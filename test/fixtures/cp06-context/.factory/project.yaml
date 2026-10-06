@@ -1,0 +1,17 @@
+schema_version: 1
+id: cp06-ten-pack
+name: CP-06 Ten Pack
+intent: Prove that bounded worker packs contain only task-relevant authoritative knowledge.
+audience: Factory reviewers.
+goals:
+  - Generate ten bounded source-attributed packs.
+  - Correct a missing decisive source through one targeted required-original selection.
+non_goals:
+  - Exercise a live account or network service.
+constraints:
+  - Credentials and raw worker transcripts never enter a context pack.
+  - Normal fixture execution is offline and deterministic.
+  - Critical ownership constraints cannot be omitted to improve relevance metrics.
+documents:
+  required: [PROJECT.md, ARCHITECTURE.md]
+completion: .factory/completion.yaml

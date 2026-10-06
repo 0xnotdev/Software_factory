@@ -37,7 +37,15 @@ For each ready task, run:
 <factory-cli> context <TASK-ID> --root <project-root> --json
 ```
 
-Inspect the pack and receipt for the exact task contract, required original sources, source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
+Select `context.required` according to [`CONTRACTS.md`](../../docs/CONTRACTS.md#task-factorytaskssave-001yaml), including its empty-selection rule. Inspect the pack and receipt for source and contract digests, CTX generation/retrieval mode, relevance, and token/byte bounds. Regenerate after any source, contract, or index change. Never place secrets, credentials, source archives, or agent transcripts in a pack.
+
+Use [`WORKFLOW.md`'s task-local worker brief and omitted-source procedure](../../docs/WORKFLOW.md#task-local-worker-brief) for fresh handoffs and targeted correction reads.
+
+## Risk and task review
+
+Follow the risk classes, check ordering, review packet, and finding dispositions in [`WORKFLOW.md`](../../docs/WORKFLOW.md#risk-and-review). Use disposable identities for critical negative tests, never real accounts or secrets; unresolved critical findings block delivery.
+
+This is task-local evidence policy, not another shipping gate. Do not call, embed, or rerun no-mistakes from Factory, and do not alter Firstmate routing or approvals. Firstmate's configured delivery invokes its normal gate once; Factory receipts may reference those resulting artifacts.
 
 ## Preview, then publish
 

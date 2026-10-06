@@ -9,7 +9,7 @@ This document specifies the methodology. CP-04 turns it into a concise, discover
 3. **Project truth:** author a concise `PROJECT.md` with goal, audience, user journeys, non-goals, constraints, and V1 limits. Draft `ARCHITECTURE.md` with component boundaries, data model, trust boundary, deployment shape, and failure handling. Keep technical choices proportionate to the first release.
 4. **Independent oracle:** in a separate reasoning pass, author `.factory/completion.yaml` from product intent and risks before decomposing into tasks. Specify observable end-to-end behavior, isolation/security invariants, recovery, and any performance thresholds the project actually needs. Include one negative test for important trust boundaries. Record the current Git SHA of this first oracle so later changes are visible.
 5. **Slices and DAG:** choose the first vertical slice that a user can exercise; add a minimal foundation only where it unlocks slices. Tasks should have one independently reviewable outcome, bounded scope, testable acceptance IDs, expected evidence, and dependencies. Prefer a serial backbone of slices with at most three genuinely independent ready tasks. Do not turn one feature into separate backend/frontend/UI megatasks that integrate only at the end.
-6. **Validate and retrieve:** use `factory validate`; repair schema/graph gaps; generate a context pack for each task via CTX. Inspect the first few packs for missing mandatory source and irrelevant bulk. Use exact source reads on decisive constraints.
+6. **Validate and retrieve:** use `factory validate`; repair schema/graph gaps; select authority according to [CONTRACTS.md](CONTRACTS.md#task-factorytaskssave-001yaml), then generate a context pack via CTX. Inspect the first few packs for a missing decisive source and irrelevant bulk. Use the targeted correction procedure below rather than widening the corpus or hiding provenance.
 7. **Preview and publish:** run `factory sync --dry-run --home <selected-home>`, inspect which items will be created and which are blocked, then explicitly apply to the selected home. The engineer's direction to execute work authorizes normal publication into the intended Firstmate home; ask only if the home or project identity is genuinely ambiguous.
 8. **Execute with Firstmate:** Firstmate chooses ready work and workers through its existing dispatch policy. Each worker receives the task contract, relevant source pack, and evidence expectations; worker tests and repairs locally. Firstmate handles the actual delivery path and approvals required by its configured project mode.
 9. **Verify per task and per project:** run deterministic gates first; semantic review receives task, diff, architecture, and observed evidence rather than the worker's full transcript. Repair specific findings and rerun changed checks. Then execute the original project oracle at the release candidate SHA. Failed project behavior creates a reviewed follow-up task. The status report must show backlog and product completion separately.
@@ -21,6 +21,7 @@ This document specifies the methodology. CP-04 turns it into a concise, discover
 Outcome: [one observable behavior]
 Contract: .factory/tasks/<ID>.yaml at SHA [digest]
 Context: .factory/state/context/<ID>.md at [generation]
+Risk: [bounded | normal | critical, with the concrete failure consequence]
 Acceptance: [IDs]
 Evidence: [commands/observations and artifact destinations]
 Dependencies: [satisfied backlog IDs]
@@ -28,17 +29,26 @@ Delivery: [Firstmate project mode]
 Escalate: product policy, new access, contradictory authoritative docs, or scope change
 ```
 
-The worker must verify the pack's source freshness, inspect only relevant code, and run evidence against the actual change. A context pack is supporting material, not an instruction channel with authority above the project's tracked documents.
+A fresh worker receives this brief, the exact task contract, bounded pack, and existing evidence—not a previous agent transcript. It must verify the pack receipt and source freshness, inspect only relevant code, and run evidence against the actual change. If the pack lacks a source needed to decide or test an acceptance or risk condition, name the missing source, read only the relevant exact-original file or range, verify its digest when available, and record how that read corrected the working assumptions. Add that exact path to `context.required` before regeneration when it is durable task authority. Do not compensate by loading broad documentation, hiding retrieved excerpts after the fact, or dropping a critical constraint. A context pack is supporting material, not an instruction channel with authority above the project's tracked documents.
 
 ## Risk and review
 
-| Risk | Examples | Required human/independent check |
-| --- | --- | --- |
-| bounded | isolated deterministic refactor, docs typo | ordinary project checks; Firstmate's standard delivery policy. |
-| normal | API behavior, persistence, UI journey | targeted integration/e2e evidence and a fresh semantic review when feasible. |
+| Risk     | Examples                                                                 | Required human/independent check                                                                              |
+| -------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| bounded  | isolated deterministic refactor, docs typo                               | ordinary project checks; Firstmate's standard delivery policy.                                                |
+| normal   | API behavior, persistence, UI journey                                    | targeted integration/e2e evidence and a fresh semantic review when feasible.                                  |
 | critical | authentication, tenancy, payments, destructive migration, external sends | explicit design constraints, negative tests, independent review, and human decision for consequential policy. |
 
-Risk is about consequences of error, not code size. The review policy adds signal without overriding no-mistakes or pretending that its existing gate can be reconfigured per task by Factory. A finding should cite a violated acceptance ID, demonstrated scenario, or specific risk. A disagreement is resolved with evidence, not reviewer authority alone.
+Risk is about consequences of error, not code size. Use the higher class when the contract understates an observed consequence, and stop for a human decision when critical policy or access is unresolved.
+
+For each task, keep this order visible in the evidence:
+
+1. Verify contract/pack digests and run the cheapest applicable schema, graph, file, type, lint, unit, and targeted integration checks. Record command, exit, artifact, and tested SHA before requesting semantic review.
+2. Build the review packet from the task contract, focused diff, relevant architecture or exact-original correction reads, and observed check evidence. Do not send a previous worker transcript as authority.
+3. Apply the table above. Bounded work uses ordinary project checks and Firstmate's delivery policy. Normal work adds targeted integration/e2e evidence and a fresh semantic review when feasible. Critical work additionally requires isolated negative tests, explicit trust-boundary constraints, independent review, and human resolution of consequential policy; fixtures must use disposable identities and no real accounts or secrets.
+4. Require each finding to cite an acceptance ID, reproduced scenario, or concrete risk. Disposition it as repaired, evidence-backed disagreement, or blocker. A repair must rerun the changed behavior and every deterministic check it could affect; unresolved critical findings block delivery.
+
+This task review adds signal but is not a shipping pipeline. Factory must not invoke, embed, or rerun no-mistakes; task evidence may reference artifacts from the one normal Firstmate-owned delivery gate. Factory likewise does not change Firstmate routing or approvals. A disagreement is resolved with evidence, not reviewer authority alone.
 
 ## Human decision format
 

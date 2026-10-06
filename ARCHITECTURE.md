@@ -43,7 +43,7 @@ Recommended exit codes: `0` success; `2` validation failure; `3` unavailable/sta
 
 ## CTX context pack
 
-`factory context TASK-ID` first includes the exact tracked task contract and a concise global project constraint section. It invokes `ctx status --root <root> --json` and `ctx doctor --offline --root <root> --json` as appropriate, then `ctx pack <query> --root <root> --token-budget <limit> --json`. The query is derived from title, outcome, acceptance, and topic strings; it is never a command. Canonical required documents are read from their original files, checked against root containment, and admitted before optional CTX excerpts. The adapter records CTX generation, file and line provenance, and available hashes; it does not treat an excerpt as a permission to ignore original wording. On stale or insufficient retrieval, it returns `CONTEXT_BLOCKED` with an actionable diagnostic. It does not fill the pack with guessed material.
+`factory context TASK-ID` first includes the exact tracked task contract and a concise global project constraint section. It invokes `ctx status --root <root> --json` and `ctx doctor --offline --root <root> --json` as appropriate, then `ctx pack <query> --root <root> --token-budget <limit> --document <task-source>... --json`. The query is derived from title, outcome, acceptance, and topic strings; it is never a command. Repeated `--document` filters implement the authority-selection contract in [docs/CONTRACTS.md](docs/CONTRACTS.md#task-factorytaskssave-001yaml). Factory verifies returned provenance against the selected canonical source identities and blocks with `RETRIEVAL_SCOPE_WIDENED` if CTX returns an out-of-scope original; it does not silently discard that excerpt and report success. Canonical required documents are read from their original files, checked against root containment, and admitted before CTX excerpts; declaring a source required never substitutes an excerpt for the exact original. The adapter records CTX generation, file and line provenance, and available hashes. On stale, missing, or insufficient retrieval, it returns `CONTEXT_BLOCKED` with an actionable diagnostic. It does not fill the pack with guessed material or hide post-retrieval excerpts to improve a relevance score.
 
 Default total task-context budgets (including contract and mandatory material) are 4,000 tokens for bounded, 8,000 for normal, and 15,000 for critical; these are design defaults to measure, not promises that CTX necessarily returns that many tokens. Reserve space for task contract and required sources before calling CTX with the remainder. The adapter enforces a byte ceiling as well as CTX's token budget, deduplicates overlapping excerpts, and never truncates an authoritative requirement mid-sentence. The pack is written atomically to `.factory/state/context/TASK-ID.md` with a sidecar receipt containing contract digest, source digests, CTX generation, timestamp, and retrieval mode. A worker verifies these before trusting the pack; if changed, regenerate it.
 
@@ -65,15 +65,15 @@ The tracked `.factory/completion.yaml` is authored before task implementation. I
 
 ## Failures and trust boundaries
 
-| Failure | Required response |
-| --- | --- |
-| CTX unavailable or index stale | Do not make up context; exact required files still available for manual work; context command exits blocked. |
-| Firstmate home absent or not registered | Publication blocked; preview shows required setup. |
-| tasks-axi CLI/version/backend incompatible | Publication blocked; no direct backlog file edit fallback. |
-| Contract changed during sync | Abort before writes where possible; report partial state if a write already occurred. |
-| Duplicate ID/body edited by another actor | Conflict, never clobber. |
-| Source path outside repo or symlink escape | Reject before reading or publishing. |
-| Project checks pass on obsolete commit | Mark stale; rerun against release candidate. |
-| Worker reports pass without evidence | Show unverified, not complete. |
+| Failure                                    | Required response                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| CTX unavailable or index stale             | Do not make up context; exact required files still available for manual work; context command exits blocked. |
+| Firstmate home absent or not registered    | Publication blocked; preview shows required setup.                                                           |
+| tasks-axi CLI/version/backend incompatible | Publication blocked; no direct backlog file edit fallback.                                                   |
+| Contract changed during sync               | Abort before writes where possible; report partial state if a write already occurred.                        |
+| Duplicate ID/body edited by another actor  | Conflict, never clobber.                                                                                     |
+| Source path outside repo or symlink escape | Reject before reading or publishing.                                                                         |
+| Project checks pass on obsolete commit     | Mark stale; rerun against release candidate.                                                                 |
+| Worker reports pass without evidence       | Show unverified, not complete.                                                                               |
 
 External repository files, CTX excerpts, and task bodies are untrusted as shell commands. The CLI never executes test commands solely because a contract specifies one; allowed project checks are defined by a reviewed, tracked verification configuration and executed only by an explicit operator/worker command. Do not store secrets or raw agent transcripts in a context pack or receipt.

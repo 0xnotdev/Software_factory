@@ -1,0 +1,19 @@
+schema_version: 1
+id: DELETE-001
+title: Conceal cross-account deletion
+outcome: Only an owner can delete a record or emit its audit marker.
+depends_on: []
+complexity: bounded
+risk: critical
+acceptance:
+  - {
+      id: A-DELETE,
+      statement: A different principal receives 404 with no mutation or audit marker.,
+    }
+advances: [C-DELETE]
+context:
+  topics: [deletion, non-disclosure, audit marker]
+  required: [PROJECT.md, ARCHITECTURE.md, docs/DELETION.md]
+evidence:
+  required: [integration]
+delivery: project-default

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source": "npm registry exact-version tarballs; verify each tarball SHA-512 SRI before extracting and recomputing the sorted [relative path, file SHA-256] manifest digest",
+  "packages": {
+    "@earendil-works/pi-coding-agent": {
+      "version": "0.85.1",
+      "tarball_integrity": "sha512-FGRN+OHbWaefBPGaTggAdLjrIHW+s2PzLyglz/5dfLzb9of7uuXMXYC0fJIeZTw+shS32o2cuQ9jF7YSDuL/oQ==",
+      "file_count": 1056,
+      "manifest_sha256": "ff28a78bb025ee9fc182929f8eec27908f5e20870a5b7d8b1b37a1ded8507ecf"
+    },
+    "@earendil-works/pi-ai": {
+      "version": "0.85.1",
+      "tarball_integrity": "sha512-+VgVIJDkDO2efYJKEEqvPTH4zmnIaXdAppGbO+vKFA9qy5PdhFiAenuFAkU+oiCSfOC4dMHDyrjdQeL4ZoC5CQ==",
+      "file_count": 750,
+      "manifest_sha256": "3e1894e3f18b90f39c068cd0815f8559083c382e7d343efd1f961a8f07b0cefc"
+    }
+  }
+}
