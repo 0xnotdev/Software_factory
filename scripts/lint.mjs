@@ -31,7 +31,7 @@ for (const path of trackedPaths) {
   }
 }
 
-for await (const path of glob("src/**/*.ts")) {
+for await (const path of glob("{src,extensions}/**/*.ts")) {
   const text = await readFile(path, "utf8");
   if (/shell\s*:\s*true/.test(text)) {
     failures.push(`${path} uses shell: true; CP-00 subprocesses must use argument arrays`);
