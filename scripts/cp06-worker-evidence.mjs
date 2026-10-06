@@ -3,7 +3,7 @@ import { auditWorkerOutcome } from "./cp06-worker-outcome.mjs";
 import { validateReadAudit } from "./cp06-auth-security.mjs";
 import { canonicalWorkerPaths, readPinnedRegularFile } from "./cp06-guarded-read.mjs";
 import { DUMMY_PI_PROVENANCE } from "./cp06-dummy-originals.mjs";
-import { resolvePinnedPiInstall } from "./cp06-pi-install.mjs";
+import { resolvePinnedPiProvenance } from "./cp06-pi-install.mjs";
 
 export function workerEvidenceContext(inputPath, target, source, { provenance } = {}) {
   const input = readWorkerInput(inputPath);
@@ -12,16 +12,15 @@ export function workerEvidenceContext(inputPath, target, source, { provenance } 
   return { input, paths, original: snapshot.bytes, originalIdentity: snapshot.identity, provenance };
 }
 
-// The supervisor resolves the selected installation itself; the DUMMY
-// expectation is a fixed literal that no genuine installation can report.
+// The supervisor resolves the selected installation itself without executing
+// Pi; the DUMMY expectation is a fixed literal no genuine installation reports.
 export function trustedWorkerProvenance({ root, environment, dummy = false }) {
   if (dummy) return DUMMY_PI_PROVENANCE;
-  return resolvePinnedPiInstall({
+  return resolvePinnedPiProvenance({
     projectRoot: root,
     packageRoot: environment.CP06_PI_PACKAGE_ROOT,
     executable: environment.CP06_PI_BIN,
-    environment,
-  }).provenance;
+  });
 }
 
 export function readWorkerInput(path) {

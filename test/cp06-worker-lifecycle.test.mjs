@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { closeSync, constants, openSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, openSync, realpathSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -24,10 +24,12 @@ import { namespaceWorkerError } from "../scripts/cp06-auth-security.mjs";
 import { Cp06CleanupError, withCleanup } from "../scripts/cp06-worker-lifecycle.mjs";
 import { createWorkerBlockedStatus } from "../scripts/replay-cp06-worker.mjs";
 import {
+  DUMMY_CLI_INSTALLED_SCENARIOS,
   DUMMY_CLI_SCENARIOS,
   DUMMY_CLI_SECRET,
   writeDummyCliShims,
 } from "../scripts/cp06-dummy-cli-shims.mjs";
+import { resolvePinnedPiProvenance } from "../scripts/cp06-pi-install.mjs";
 import { withCompiledHelper } from "./fixtures/cp06-compiled-helper.mjs";
 import { dummyWorkerContext, dummyWorkerEvidence } from "../scripts/cp06-dummy-worker-evidence.mjs";
 import { DUMMY_OUTCOME_ORIGINAL } from "../scripts/cp06-dummy-originals.mjs";
@@ -524,6 +526,7 @@ test("supervisor executable serializes compound worker failures as typed causes"
               "private",
               "--",
               process.execPath,
+              "--experimental-import-meta-resolve",
               resolve("scripts/cp06-namespace-supervisor.mjs"),
               "worker",
               source,
@@ -566,6 +569,120 @@ test("supervisor executable serializes compound worker failures as typed causes"
           assert.deepEqual(blocked.worker_failure, record);
           assert.equal(blocked.code, record.code);
           assert.equal(blocked.cleanup_failed, record.code === "CP06_CLEANUP_FAILED");
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      closeSync(probeFd);
+    }
+  });
+});
+
+test("supervisor executable resolves the selected installation without DUMMY trust", async () => {
+  const installRoot = resolve(".factory/state/cp06-sdk/node_modules");
+  const install = {
+    CP06_PI_PACKAGE_ROOT: join(installRoot, "@earendil-works/pi-coding-agent"),
+    CP06_PI_BIN: join(installRoot, ".bin/pi"),
+  };
+  const installed = existsSync(install.CP06_PI_PACKAGE_ROOT);
+  const setup = {
+    schema_version: 1,
+    stage: "setup",
+    code: "CP06_ISOLATION_SETUP_FAILED",
+    exit_code: 73,
+    description: "credential namespace setup failed",
+    causes: [],
+  };
+  const cases = [
+    { name: "installation-missing", scenario: "dummy-provenance-untrusted", install: {}, record: setup },
+    ...(installed
+      ? Object.entries(DUMMY_CLI_INSTALLED_SCENARIOS).map(([scenario, { record }]) => ({
+          name: scenario,
+          scenario,
+          install,
+          record,
+        }))
+      : []),
+  ];
+  await withCompiledHelper("cli-installed", async ({ helperFd, binaries }) => {
+    const probeFd = openSync(binaries.syscallProbe, constants.O_RDONLY | constants.O_CLOEXEC);
+    try {
+      for (const { name, scenario, install: selected, record } of cases) {
+        const directory = realpathSync(await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-installed-")));
+        const shims = join(directory, "shims");
+        const source = join(directory, "credential", "DUMMY-source.json");
+        const sourceBytes = '{"DUMMY":"credential fixture only"}';
+        await mkdir(shims);
+        await mkdir(join(directory, "credential"));
+        await writeFile(source, sourceBytes);
+        await mkdir(join(directory, "docs"));
+        await writeFile(join(directory, "docs/AUTH.md"), DUMMY_OUTCOME_ORIGINAL);
+        await writeFile(join(directory, "DUMMY-contract.yaml"), "DUMMY contract");
+        await writeFile(join(directory, "DUMMY-pack.md"), "DUMMY pack");
+        await writeFile(join(directory, "DUMMY-input.json"), JSON.stringify({
+          schema_version: 1, root: directory, fixture_root: directory,
+          original_path: join(directory, "docs/AUTH.md"),
+          contract_path: join(directory, "DUMMY-contract.yaml"), pack_path: join(directory, "DUMMY-pack.md"),
+          provider: "openai-codex", model: "DUMMY-model", timeout_ms: 1_000,
+        }));
+        const environment = { ...process.env, ...selected, HOME: directory };
+        delete environment.CP06_DUMMY_TRUSTED_PROVENANCE;
+        if (selected.CP06_PI_PACKAGE_ROOT === undefined) {
+          delete environment.CP06_PI_PACKAGE_ROOT;
+          delete environment.CP06_PI_BIN;
+        }
+        environment.PATH = writeDummyCliShims({ anchor: shims, path: shims, scenario });
+        try {
+          const result = spawnSync(
+            "unshare",
+            [
+              "--user",
+              "--map-root-user",
+              "--mount",
+              "--propagation",
+              "private",
+              "--",
+              process.execPath,
+              "--experimental-import-meta-resolve",
+              resolve("scripts/cp06-namespace-supervisor.mjs"),
+              "worker",
+              source,
+              join(directory, "home", "pi-agent", "auth.json"),
+              "/proc/self/fd/3",
+              "/proc/self/fd/4",
+              join(directory, "DUMMY-input.json"),
+            ],
+            {
+              encoding: "utf8",
+              timeout: 60_000,
+              stdio: ["pipe", "pipe", "pipe", helperFd, probeFd],
+              env: environment,
+            },
+          );
+          assert.equal(`${result.stdout}${result.stderr}`.includes(DUMMY_CLI_SECRET), false);
+          assert.equal(await readFile(source, "utf8"), sourceBytes);
+          if (record === null) {
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(result.stderr, "");
+            const success = JSON.parse(result.stdout);
+            assert.equal(success.cleanup, "pass");
+            assert.deepEqual(
+              success.child.pi_install,
+              resolvePinnedPiProvenance({
+                projectRoot: process.cwd(),
+                packageRoot: install.CP06_PI_PACKAGE_ROOT,
+                executable: install.CP06_PI_BIN,
+              }),
+            );
+            continue;
+          }
+          assert.equal(result.status, record.exit_code, name);
+          assert.equal(result.stdout, "");
+          assert.equal(result.stderr, `${JSON.stringify(record)}\n`);
+          if (name === "installation-missing") {
+            await assert.rejects(stat(join(directory, "home")), { code: "ENOENT" });
+          }
         } finally {
           await rm(directory, { recursive: true, force: true });
         }

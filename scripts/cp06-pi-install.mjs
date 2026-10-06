@@ -9,6 +9,30 @@ const PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const SUPPORTED_VERSION = "0.85.1";
 
 export function resolvePinnedPiInstall(options) {
+  const { projectRoot, packageRoot, executable, provenance } = selectPinnedPi(options);
+  const spawn = options.spawnSyncImpl ?? spawnSync;
+  const version = spawn(executable, ["--version"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    timeout: 10_000,
+    env: options.environment ?? process.env,
+  });
+  if (
+    version.error !== undefined ||
+    version.status !== 0 ||
+    version.stdout.trim() !== SUPPORTED_VERSION
+  ) {
+    throw new Error("selected task-local Pi executable version is unsupported");
+  }
+  return { root: packageRoot, executable, version: SUPPORTED_VERSION, provenance };
+}
+
+/** Selected-installation provenance from paths, metadata and pins only; never executes Pi. */
+export function resolvePinnedPiProvenance(options) {
+  return selectPinnedPi(options).provenance;
+}
+
+function selectPinnedPi(options) {
   const projectRoot = realpathSync(resolve(options.projectRoot));
   const selectedRoot = resolve(projectRoot, ".factory/state/cp06-sdk");
   const expectedPackageRoot = join(
@@ -49,25 +73,11 @@ export function resolvePinnedPiInstall(options) {
 
   const packageIntegrity = verifyPinnedPackage(packageRoot, PACKAGE_NAME);
   const piAi = resolvePinnedPiAi(packageRoot);
-  const spawn = options.spawnSyncImpl ?? spawnSync;
-  const version = spawn(expectedExecutable, ["--version"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    timeout: 10_000,
-    env: options.environment ?? process.env,
-  });
-  if (
-    version.error !== undefined ||
-    version.status !== 0 ||
-    version.stdout.trim() !== SUPPORTED_VERSION
-  ) {
-    throw new Error("selected task-local Pi executable version is unsupported");
-  }
 
   return {
-    root: packageRoot,
+    projectRoot,
+    packageRoot,
     executable: expectedExecutable,
-    version: SUPPORTED_VERSION,
     provenance: {
       install_root: selectedRoot,
       package_root: packageRoot,

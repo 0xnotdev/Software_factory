@@ -63,13 +63,23 @@ export const DUMMY_CLI_SCENARIOS = {
   success: { child: "valid", cleanupFails: false, record: null },
 };
 
+/** Scenarios run without the DUMMY trust flag against the task-local installation. */
+export const DUMMY_CLI_INSTALLED_SCENARIOS = {
+  "installed-provenance": { child: "installed", cleanupFails: false, record: null },
+  "dummy-provenance-untrusted": {
+    child: "valid",
+    cleanupFails: false,
+    record: { schema_version: 1, ...AUDIT, causes: [] },
+  },
+};
+
 export const DUMMY_CLI_SECRET = "DUMMY-SECRET-CLI-MARKER";
 
 const dummyEvidence = fileURLToPath(new URL("./cp06-dummy-worker-evidence.mjs", import.meta.url));
 
 /** Write scenario shims into `anchor`; returns a PATH that resolves them first. */
 export function writeDummyCliShims({ anchor, path, scenario, inheritedPath = process.env.PATH }) {
-  const selected = DUMMY_CLI_SCENARIOS[scenario];
+  const selected = DUMMY_CLI_SCENARIOS[scenario] ?? DUMMY_CLI_INSTALLED_SCENARIOS[scenario];
   if (selected === undefined) throw new Error("unsupported DUMMY CLI scenario");
   const realSetpriv = locate("setpriv", inheritedPath);
   const realUmount = locate("umount", inheritedPath);
@@ -79,6 +89,7 @@ export function writeDummyCliShims({ anchor, path, scenario, inheritedPath = pro
     exit: `printf '%s' '${DUMMY_CLI_SECRET}' >&2; exit 1`,
     valid: `exec '${process.execPath}' '${dummyEvidence}' "$last"`,
     "forged-provenance": `exec '${process.execPath}' '${dummyEvidence}' "$last" forged-provenance`,
+    installed: `exec '${process.execPath}' --experimental-import-meta-resolve '${dummyEvidence}' "$last" installed`,
   }[selected.child];
   writeExecutable(
     anchor,

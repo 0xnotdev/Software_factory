@@ -189,7 +189,7 @@ test("supervisor CLI serializes fixture setup and independent fixture cleanup ca
         writeFileSync(join(shims, name), `#!/bin/sh\nfor argument do last="$argument"; done\n${body}\n`);
         chmodSync(join(shims, name), 0o700);
       }
-      const result = spawnSync("unshare", ["--user", "--map-root-user", "--mount", "--propagation", "private", "--", process.execPath, resolve("scripts/cp06-namespace-supervisor.mjs"), "hardened-probe", outputRoot, "-", "/DUMMY-helper", "/DUMMY-probe"], {
+      const result = spawnSync("unshare", ["--user", "--map-root-user", "--mount", "--propagation", "private", "--", process.execPath, "--experimental-import-meta-resolve", resolve("scripts/cp06-namespace-supervisor.mjs"), "hardened-probe", outputRoot, "-", "/DUMMY-helper", "/DUMMY-probe"], {
         encoding: "utf8", timeout: 30_000, env: { ...process.env, PATH: `${shims}:${process.env.PATH}` },
       });
       const record = umountFails

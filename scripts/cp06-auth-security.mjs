@@ -273,6 +273,7 @@ function runNamespace(options) {
         "private",
         "--",
         process.execPath,
+        "--experimental-import-meta-resolve",
         join(options.root, "scripts/cp06-namespace-supervisor.mjs"),
         options.mode,
         resolve(options.source),

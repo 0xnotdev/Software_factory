@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workerEvidenceContext } from "./cp06-worker-evidence.mjs";
 import { DUMMY_OUTCOME_ORIGINAL, DUMMY_PI_PROVENANCE } from "./cp06-dummy-originals.mjs";
+import { resolvePinnedPiProvenance } from "./cp06-pi-install.mjs";
 
 export function dummyWorkerContext(directory = "/DUMMY") {
   return {
@@ -49,6 +50,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const context = workerEvidenceContext(process.argv[2]);
     const evidence = dummyWorkerEvidence(context);
     if (process.argv[3] === "invalid") evidence.response = { status: "PASS", evidence_gaps: [] };
+    if (process.argv[3] === "installed") {
+      evidence.pi_install = resolvePinnedPiProvenance({
+        projectRoot: process.env.CP06_PROJECT_ROOT,
+        packageRoot: process.env.CP06_PI_PACKAGE_ROOT,
+        executable: process.env.CP06_PI_BIN,
+      });
+    }
     if (process.argv[3] === "forged-provenance") {
       evidence.pi_install.package_artifact.tarball_integrity = "sha512-DUMMY-SECRET-CLI-MARKER";
     }

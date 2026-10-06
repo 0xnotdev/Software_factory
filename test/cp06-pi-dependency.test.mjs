@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { resolvePinnedPiInstall } from "../scripts/cp06-pi-install.mjs";
+import { trustedWorkerProvenance } from "../scripts/cp06-worker-evidence.mjs";
 
 const resolverUrl = pathToFileURL(resolve("scripts/cp06-pi-dependency.mjs")).href;
 
@@ -105,6 +106,47 @@ test("exact artifact succeeds and same-version selected entry substitutions fail
     await writeFile(aiEntry, "DUMMY same-version dependency replacement");
     assert.throws(() => resolvePinnedPiInstall(options), /pinned artifact/);
     assert.equal(launches, 1);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("supervisor trusted provenance verifies the selected installation without executing Pi", async (t) => {
+  const installed = resolve(".factory/state/cp06-sdk/node_modules/@earendil-works");
+  if (!existsSync(join(installed, "pi-ai"))) return t.skip("task-local CP-06 SDK is not installed");
+  const projectRoot = await mkdtemp(join(tmpdir(), "factory-cp06-DUMMY-trusted-provenance-"));
+  const selected = join(projectRoot, ".factory/state/cp06-sdk/node_modules");
+  const packages = join(selected, "@earendil-works");
+  const packageRoot = join(packages, "pi-coding-agent");
+  const executable = join(selected, ".bin/pi");
+  try {
+    await mkdir(packages, { recursive: true });
+    await mkdir(join(selected, ".bin"));
+    for (const name of ["pi-coding-agent", "pi-ai"]) {
+      await cp(join(installed, name), join(packages, name), { recursive: true });
+    }
+    const binPath = JSON.parse(await readFile(join(packageRoot, "package.json"))).bin;
+    await symlink(
+      join(packageRoot, typeof binPath === "string" ? binPath : binPath.pi),
+      executable,
+    );
+    const environment = {
+      CP06_PI_PACKAGE_ROOT: packageRoot,
+      CP06_PI_BIN: executable,
+      PATH: join(projectRoot, "DUMMY-no-node"),
+      HOME: join(projectRoot, "DUMMY-home"),
+    };
+    const trusted = trustedWorkerProvenance({ root: projectRoot, environment });
+    const reported = resolvePinnedPiInstall({
+      projectRoot,
+      packageRoot,
+      executable,
+      spawnSyncImpl: () => ({ status: 0, stdout: "0.85.1\n" }),
+    }).provenance;
+    assert.deepEqual(trusted, reported);
+    assert.equal(existsSync(join(projectRoot, "DUMMY-home")), false);
+    await writeFile(join(packages, "pi-ai/dist/index.js"), "DUMMY same-version dependency replacement");
+    assert.throws(() => trustedWorkerProvenance({ root: projectRoot, environment }), /pinned artifact/);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

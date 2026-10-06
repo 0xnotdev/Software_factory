@@ -55,6 +55,18 @@ export async function superviseCredentialChild(options, dependencies = {}) {
       throw setup;
     }
   }
+  let provenance;
+  if (mode === "worker" && !dependencies.spawn) {
+    try {
+      provenance = trustedWorkerProvenance({
+        root,
+        environment: process.env,
+        dummy: process.env.CP06_DUMMY_TRUSTED_PROVENANCE === "1",
+      });
+    } catch (cause) {
+      throw failure("setup", "CP06_ISOLATION_SETUP_FAILED", 73, cause);
+    }
+  }
   const source = probe?.source ?? requestedSource;
   const target = probe?.target ?? requestedTarget;
   const beforeHash = probe?.beforeHash ?? null;
@@ -102,13 +114,7 @@ export async function superviseCredentialChild(options, dependencies = {}) {
           let workerContext = dependencies.workerContext;
           if (mode === "worker" && !dependencies.spawn) {
             try {
-              workerContext = workerEvidenceContext(childArgs[0], target, source, {
-                provenance: trustedWorkerProvenance({
-                  root,
-                  environment: childEnvironment(mode, source, target),
-                  dummy: process.env.CP06_DUMMY_TRUSTED_PROVENANCE === "1",
-                }),
-              });
+              workerContext = workerEvidenceContext(childArgs[0], target, source, { provenance });
             } catch {
               throw failure("audit", "CP06_CHILD_OUTPUT_INVALID", 70);
             }
