@@ -143,6 +143,7 @@ export async function smoke(packageRoot) {
         },
         direct,
       );
+      assert.equal(result.details.signal, null);
       assert.equal(result.details.killed, false);
       assert.equal(await children(), initialChildren, "CLI must be reaped before command returns");
       cases.push({ input: `/factory ${text}`, exit_code: expectedCode, exact_stdout_stderr: true });

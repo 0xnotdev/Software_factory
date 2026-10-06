@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
+import secrets
 import select
 import shutil
 import signal
@@ -40,12 +42,17 @@ with tempfile.TemporaryDirectory(prefix="factory CP07 reload DUMMY ") as tempora
     os.close(slave)
     raw = bytearray()
     statuses = []
+    nonce = f"POSTRELOAD_DUMMY_{secrets.token_hex(4)}"
 
-    def wait_for(text, start=0, seconds=30):
+    ansi = re.compile(rb"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])")
+    label = re.compile(rb"exit: (\d+)(?=\D)")
+
+    def wait_for(find, seconds=30):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if text.encode() in raw[start:]:
-                return
+            found = find()
+            if found is not None:
+                return found
             readable, _, _ = select.select([master], [], [], 0.1)
             if readable:
                 try:
@@ -57,23 +64,36 @@ with tempfile.TemporaryDirectory(prefix="factory CP07 reload DUMMY ") as tempora
                 if not chunk:
                     break
                 raw.extend(chunk)
-        raise AssertionError(f"Pi did not display {text!r}; status={process.poll()}")
+        raise AssertionError(f"Pi did not display expected output; status={process.poll()}")
 
-    def send(command, expected):
+    def marker_after(text, start):
+        index = raw.find(text.encode(), start)
+        return None if index < 0 else index + len(text.encode())
+
+    def send(command, marker, expected_exit=None):
         start = len(raw)
+        # The marker must be new output of this invocation, never a redraw of prior transcript.
+        if marker.encode() in raw:
+            raise AssertionError(f"marker {marker!r} was already displayed before {command!r}")
         os.write(master, command.encode() + b"\r")
-        wait_for(expected, start)
-        statuses.append({"command": command, "observed": expected})
+        end = wait_for(lambda: marker_after(marker, start))
+        observed = None
+        if expected_exit is not None:
+            match = wait_for(lambda: label.search(ansi.sub(b"", bytes(raw[end:]))))
+            observed = int(match.group(1))
+            if observed != expected_exit:
+                raise AssertionError(f"{command!r} displayed exit {observed}, expected {expected_exit}")
+        statuses.append({"command": command, "marker": marker, "cli_exit_code": observed})
 
     try:
-        wait_for("factory.ts")
-        send("/factory validate", "Factory validate: context-fixture")
-        send("/factory run", "FACTORY_ARGUMENT_ERROR")
-        send("/factory context", "VALIDATION_ERROR: context requires TASK-ID")
+        wait_for(lambda: marker_after("factory.ts", 0))
+        send("/factory validate", "Factory validate: context-fixture", 0)
+        send("/factory run", "FACTORY_ARGUMENT_ERROR", 2)
+        send("/factory context", "VALIDATION_ERROR: context requires TASK-ID", 2)
         send("/reload", "Reloaded")
-        send("/factory validate", "Factory validate: context-fixture")
-        send("/factory status", "Factory status: NOT COMPLETE")
-        send("/factory status extra", "VALIDATION_ERROR: Unknown argument: extra")
+        send("/factory validate --json", '"command": "validate"', 0)
+        send("/factory status", "Factory status: NOT COMPLETE", 0)
+        send(f"/factory status {nonce}", f"VALIDATION_ERROR: Unknown argument: {nonce}", 2)
         os.write(master, b"/quit\r")
         process.wait(timeout=15)
         if process.returncode != 0:

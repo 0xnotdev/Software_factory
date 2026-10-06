@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
+import { constants } from "node:os";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Pi loads this source entry from the package manifest, not dist/extensions/.
@@ -45,43 +48,122 @@ function argumentsFor(input: string): string[] {
   return args;
 }
 
-export default function factory(pi: ExtensionAPI): void {
+export interface FactoryHost {
+  cli: string;
+  execPath: string;
+  bun: string | undefined;
+  sea: boolean;
+}
+
+export interface FactoryResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  signal: string | null;
+  killed: boolean;
+}
+
+function singleExecutable(): boolean {
+  try {
+    const sea = process.getBuiltinModule("node:sea") as { isSea(): boolean } | undefined;
+    return sea?.isSea() ?? false;
+  } catch {
+    return true;
+  }
+}
+
+// A Bun-compiled or bundled Pi binary is not a Node interpreter: running it with
+// the CLI path would start a nested Pi prompt, so fail closed instead.
+function isNodeInterpreter(host: FactoryHost): boolean {
+  return (
+    host.bun === undefined &&
+    !host.sea &&
+    /^node(js)?(-?\d+(\.\d+)*)?(\.exe)?$/i.test(basename(host.execPath))
+  );
+}
+
+function failure(code: string, message: string, exitCode: number): FactoryResult {
+  return {
+    stdout: "",
+    stderr: `${code}: ${message}\n`,
+    exit_code: exitCode,
+    signal: null,
+    killed: false,
+  };
+}
+
+// Streams are decoded once after close so multi-byte characters split across
+// pipe chunks stay intact; a signal is reported as such, never as success.
+function runCli(command: string, args: string[], cwd: string): Promise<FactoryResult> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", (error) =>
+      resolve(failure("FACTORY_RUNTIME_UNAVAILABLE", error.message, 3)),
+    );
+    child.once("close", (code, signal) =>
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        exit_code: code ?? 128 + (signal ? (constants.signals[signal] ?? 0) : 0),
+        signal,
+        killed: signal !== null,
+      }),
+    );
+  });
+}
+
+async function invoke(host: FactoryHost, input: string, cwd: string): Promise<FactoryResult> {
+  let args: string[];
+  try {
+    args = argumentsFor(input);
+  } catch (error) {
+    return failure("FACTORY_ARGUMENT_ERROR", (error as Error).message, 2);
+  }
+  if (!isNodeInterpreter(host)) {
+    return failure(
+      "FACTORY_RUNTIME_UNAVAILABLE",
+      `Pi host ${host.execPath} is not a Node.js interpreter; run the Factory CLI directly with Node`,
+      3,
+    );
+  }
+  // One awaited foreground CLI. It owns validation, canonical roots, budgets,
+  // integration timeouts and errors. Registration/reload starts nothing.
+  return runCli(host.execPath, [host.cli, ...args], cwd);
+}
+
+export function registerFactory(pi: ExtensionAPI, host: FactoryHost): void {
   pi.registerCommand("factory", {
     description: "Factory CLI: status, validate, context <ID> (no dispatch)",
     handler: async (input, ctx) => {
-      let args: string[];
-      try {
-        args = argumentsFor(input);
-      } catch (error) {
-        const stderr = `FACTORY_ARGUMENT_ERROR: ${error instanceof Error ? error.message : String(error)}\n`;
-        pi.sendMessage(
-          {
-            customType: "factory-result",
-            content: stderr + "exit: 2",
-            display: true,
-            details: { stdout: "", stderr, exit_code: 2, killed: false },
-          },
-          { triggerTurn: false },
-        );
-        return;
-      }
-      // One awaited foreground CLI. It owns validation, canonical roots, budgets,
-      // integration timeouts and errors. Registration/reload starts nothing.
-      const result = await pi.exec(process.execPath, [cli, ...args], { cwd: ctx.cwd });
+      const result = await invoke(host, input, ctx.cwd);
+      const status = `exit: ${result.exit_code}${result.signal ? ` (signal ${result.signal})` : ""}`;
       pi.sendMessage(
         {
           customType: "factory-result",
           display: true,
-          content: `${result.stdout}${result.stderr}exit: ${result.code}${result.killed ? " (killed)" : ""}`,
-          details: {
-            stdout: result.stdout,
-            stderr: result.stderr,
-            exit_code: result.code,
-            killed: result.killed,
-          },
+          content: `${result.stdout}${result.stderr}${status}`,
+          details: result,
         },
         { triggerTurn: false },
       );
     },
+  });
+}
+
+export default function factory(pi: ExtensionAPI): void {
+  registerFactory(pi, {
+    cli,
+    execPath: process.execPath,
+    bun: process.versions.bun,
+    sea: singleExecutable(),
   });
 }
