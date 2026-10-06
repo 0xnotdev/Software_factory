@@ -3,6 +3,8 @@ node_modules/
 dist/
 coverage/
 test/.tmp/
+__pycache__/
+*.pyc
 
 # Factory runtime/generated state and context indexes
 .factory/state/
