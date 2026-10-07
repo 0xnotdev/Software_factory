@@ -90,5 +90,19 @@
     "windows_chrome_browser": "verified_via_loopback_bridge",
     "native_windows_node_application": "unverified",
     "macos": "unverified"
+  },
+  "factory_prevalidation": {
+    "commit": "af0edf7628fdaa7cfd2311f278f2cc833b64ea98",
+    "date": "2026-10-07",
+    "reviewer": "Factory CP-08 coordinator",
+    "npm_test": {
+      "exit_code": 0,
+      "passed": 201,
+      "failed": 0,
+      "log_sha256": "305e852fa16e8911dde5aed01088bda00de78a683251607bdddd3f01e13e0af8"
+    },
+    "pi_real_ctx_log_sha256": "831d06682f5e1ac9637ea9a1128f541537933bc73b7940b63082dd819c70e281",
+    "pi_reload_log_sha256": "8bbff008b848b8362d323433064ec5d4db1aa4a6a371d3ef99399e2c21b8f18c",
+    "final_no_mistakes": "pending"
   }
 }

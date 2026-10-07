@@ -1,6 +1,6 @@
 # Factory: build package
 
-**Status:** development CLI with landed CP-06 corrections and CP-07 Pi convenience commands. Product completion requires the independent gates in [COMPLETION.md](COMPLETION.md); checkpoint state is owned by [BUILD_PLAN.md](BUILD_PLAN.md).
+**Status:** CP-08 release candidate. The CLI, optional Pi commands, and greenfield read-later acceptance have executed the independent V0/V1 gates with the platform limits recorded in [the CP-08 evidence ledger](docs/probes/CP-08.md). Final no-mistakes PR/CI delivery remains separate; checkpoint state is owned by [BUILD_PLAN.md](BUILD_PLAN.md).
 
 Factory is a thin layer for turning a software product brief into independently verifiable work for an existing Pi + Firstmate setup. Its purpose is to minimize the intelligence, context, and human attention required to transform intent into verified software.
 
@@ -57,14 +57,14 @@ CP-06's development proof commands, exact SDK requirements, evidence interpretat
 
 ## Document authority
 
-| Question | Owner |
-| --- | --- |
-| Why and what | `PROJECT.md` |
-| Component and state decisions | `ARCHITECTURE.md` |
-| Completed behavior | `COMPLETION.md` |
-| Build sequence | `BUILD_PLAN.md` |
-| Contract fields and validation | `docs/CONTRACTS.md` |
-| External API boundary | `docs/INTEGRATIONS.md` |
-| Agent methodology | `docs/WORKFLOW.md` |
+| Question                       | Owner                  |
+| ------------------------------ | ---------------------- |
+| Why and what                   | `PROJECT.md`           |
+| Component and state decisions  | `ARCHITECTURE.md`      |
+| Completed behavior             | `COMPLETION.md`        |
+| Build sequence                 | `BUILD_PLAN.md`        |
+| Contract fields and validation | `docs/CONTRACTS.md`    |
+| External API boundary          | `docs/INTEGRATIONS.md` |
+| Agent methodology              | `docs/WORKFLOW.md`     |
 
 If two documents conflict, stop, reconcile the appropriate owner, and record the change in Git before continuing. A CTX excerpt is a pointer to the original Markdown, never a replacement for the original source. External docs listed in `docs/RESEARCH.md` inform design but do not override these decisions.
