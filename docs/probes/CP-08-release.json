@@ -2,7 +2,7 @@
   "schema_version": 1,
   "checkpoint": "CP-08",
   "recorded_at": "2026-10-07T07:58:56Z",
-  "status": "TECHNICALLY_READY_HUMAN_INSPECTION_PENDING",
+  "status": "APPLICATION_COMPLETE_CAPTAIN_REQUESTED_CLAUDE_TEST_PENDING",
   "factory_baseline": "9ba7ded28b519809100b965c2f67850a7b8f701d",
   "application": {
     "project": "FactoryReadLaterAcceptance",
@@ -63,8 +63,13 @@
     "RL-003": "passed",
     "RL-004": "passed",
     "RL-005": "passed",
-    "RL-006": "pending_actual_captain_inspection",
-    "product_status": "NOT COMPLETE"
+    "RL-006": "passed_actual_captain_inspection",
+    "RL-006_receipt_sha256": "d325cc7e526b6a5f4e6afaef1784834d9e0159380601f1154ebb11baaca57b4b",
+    "human_observation_sha256": "717779cf3d7a6431944f7d81d3e117a82436ce223281a6bdfc9af321be8a17f6",
+    "captain_exact_words_sha256": "7c8bde9a3e6759616bac3ec182a060b181354f1bdf0ee14af0ac1066e40f7568",
+    "human_observation_scope": "Captain accepted the perceived UI as looking okay and very simple; no claim that the captain personally executed every workflow.",
+    "captain_follow_up": "Explicit additional Claude test requested and pending.",
+    "product_status": "COMPLETE"
   },
   "portability": {
     "linux_node_application": "verified",
