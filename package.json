@@ -31,6 +31,8 @@
     "proof:cp06:worker-cleanup": "node scripts/prove-cp06-worker-cleanup.mjs",
     "proof:cp07:pi": "npm run build && node scripts/cp07-pi-smoke.mjs",
     "proof:cp07:reload": "python3 scripts/cp07-pi-reload.py",
+    "proof:cp08:oracle": "node scripts/cp08-oracle-proof.mjs",
+    "proof:cp08:status": "node scripts/cp08-status-proof.mjs",
     "factory": "node dist/src/cli.js"
   },
   "engines": {

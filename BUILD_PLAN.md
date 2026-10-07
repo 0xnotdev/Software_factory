@@ -108,10 +108,10 @@ The development proof and exact-head final validation procedure are owned by [do
 
 **Deliverable:** One small, nontrivial read-later application started from an empty separate repo and product brief. It includes account isolation, persistence, search, and a usable UI, delivered in at least two vertical slices.
 
-- [ ] Freeze brief and completion oracle before implementation; record decisions and first oracle commit.
-- [ ] Validate DAG, publish through reviewed sync, dispatch via Firstmate, and gather slice evidence.
-- [ ] Execute original project-level checks at release candidate SHA; demonstrate recovery from one interrupted run.
-- [ ] **Gate:** P-01, P-02, P-05, P-08 plus all V0 gates; inspect real product manually and list portability limits.
+- [x] Freeze brief and completion oracle before implementation; record decisions and first oracle commit.
+- [x] Validate DAG, publish through reviewed sync, dispatch via Firstmate, and gather slice evidence.
+- [x] Execute original project-level checks at release candidate SHA; demonstrate recovery from one interrupted run.
+- [x] **Gate:** P-01, P-02, P-05, P-08 plus all V0 gates; inspect real product manually and list portability limits.
 
 ## Build handoff
 

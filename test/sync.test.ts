@@ -296,6 +296,34 @@ test(
 );
 
 test(
+  "installed tasks-axi quoted scalar output reconciles punctuation in task titles",
+  requiresTasksAxi,
+  async () => {
+    const fixture = await createFixture("sync-quoted-title", [["TASK-A", []]]);
+    try {
+      const contractPath = join(fixture.root, ".factory/tasks/TASK-A.yaml");
+      const contract = await readFile(contractPath, "utf8");
+      await writeFile(
+        contractPath,
+        contract.replace("title: TASK-A title", "title: Deliver account save, list, and restart"),
+      );
+
+      const first = await factory(fixture, "--apply");
+      assert.equal(first.exitCode, 0, first.stderr || first.stdout);
+      assert.deepEqual(JSON.parse(first.stdout).created_ids, [publishedId("TASK-A")]);
+
+      const beforeRetry = await backlogHash(fixture.home);
+      const retry = await factory(fixture, "--apply");
+      assert.equal(retry.exitCode, 0, retry.stderr || retry.stdout);
+      assert.equal(JSON.parse(retry.stdout).summary.unchanged, 1);
+      assert.equal(await backlogHash(fixture.home), beforeRetry);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
+
+test(
   "an existing held dependency stays held and keeps its dependent non-ready",
   requiresTasksAxi,
   async () => {
