@@ -24,6 +24,11 @@ const ORACLE_FILES = [
 ];
 const FROZEN_PATHS = [
   "ORIGINAL_BRIEF.md",
+  "PROJECT.md",
+  "ARCHITECTURE.md",
+  "COMPLETION.md",
+  "docs/DECISIONS.md",
+  "docs/VERIFICATION.md",
   ".factory/completion.yaml",
   ".factory/project.yaml",
   ".factory/tasks/SLICE-001.yaml",

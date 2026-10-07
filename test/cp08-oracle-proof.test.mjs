@@ -136,22 +136,34 @@ test("CP08 oracle proof binds a separate release to its unchanged first-commit t
     assert.equal(evidence.release_commit, subject.release);
     assert.deepEqual(evidence.factory_validation.task_order, ["SLICE-001", "SLICE-002"]);
     assert.equal(evidence.oracle_application_files, 0);
-
-    await writeFile(
-      join(subject.root, ".factory/completion.yaml"),
-      completion.replace("Observable condition 1 passes.", "A weakened replacement passes."),
-    );
-    await git(subject.root, ["add", ".factory/completion.yaml"]);
-    await git(subject.root, ["commit", "-q", "-m", "Mutate oracle contract"]);
-    subject.release = (await git(subject.root, ["rev-parse", "HEAD"])).stdout.trim();
-
-    const stale = await prove(subject);
-    assert.equal(stale.exitCode, 1);
-    const failure = JSON.parse(stale.stdout);
-    assert.equal(failure.status, "fail");
-    assert.equal(failure.error.code, "FROZEN_SOURCE_CHANGED");
-    assert.equal(failure.error.details.path, ".factory/completion.yaml");
   } finally {
     await rm(subject.root, { recursive: true, force: true });
   }
 });
+
+for (const mutation of [
+  {
+    path: ".factory/completion.yaml",
+    content: completion.replace("Observable condition 1 passes.", "A weakened replacement passes."),
+  },
+  { path: "PROJECT.md", content: "# Project\n\nChanged product truth.\n" },
+]) {
+  test(`CP08 oracle proof rejects a later change to ${mutation.path}`, async () => {
+    const subject = await createSubject();
+    try {
+      await writeFile(join(subject.root, mutation.path), mutation.content);
+      await git(subject.root, ["add", mutation.path]);
+      await git(subject.root, ["commit", "-q", "-m", "Mutate frozen oracle source"]);
+      subject.release = (await git(subject.root, ["rev-parse", "HEAD"])).stdout.trim();
+
+      const stale = await prove(subject);
+      assert.equal(stale.exitCode, 1);
+      const failure = JSON.parse(stale.stdout);
+      assert.equal(failure.status, "fail");
+      assert.equal(failure.error.code, "FROZEN_SOURCE_CHANGED");
+      assert.equal(failure.error.details.path, mutation.path);
+    } finally {
+      await rm(subject.root, { recursive: true, force: true });
+    }
+  });
+}
