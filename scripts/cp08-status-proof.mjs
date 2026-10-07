@@ -11,6 +11,18 @@ const stateRoot = join(factoryRoot, ".factory", "state");
 const cli = join(factoryRoot, "dist", "src", "cli.js");
 const releaseShaPattern = /^[a-f0-9]{40}$/;
 
+async function canonicalPath(path) {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    const parent = dirname(path);
+    if (error?.code !== "ENOENT" || parent === path) {
+      throw error;
+    }
+    return join(await canonicalPath(parent), basename(path));
+  }
+}
+
 class ProofError extends Error {
   constructor(code, message, details = undefined) {
     super(message);
@@ -254,8 +266,8 @@ async function main() {
   }
 
   const output = resolve(input.output);
-  const canonicalState = await realpath(stateRoot);
-  const canonicalParent = await realpath(dirname(output));
+  const canonicalState = await canonicalPath(stateRoot);
+  const canonicalParent = await canonicalPath(dirname(output));
   if (
     canonicalParent !== canonicalState &&
     !canonicalParent.startsWith(`${canonicalState}${sep}`)
